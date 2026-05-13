@@ -1425,9 +1425,14 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
                   View Profile
                 </DropdownMenuItem>
                 {getUserInfo()?.role === 'admin' && (
-                  <DropdownMenuItem onClick={() => window.location.hash = '/admin'}>
-                    Admin Panel
-                  </DropdownMenuItem>
+                  <>
+                    <DropdownMenuItem onClick={() => window.location.hash = '/admin'}>
+                      Admin Panel
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => window.location.hash = '/dashboard'}>
+                      Live Team Dashboard
+                    </DropdownMenuItem>
+                  </>
                 )}
                 <DropdownMenuItem onClick={() => handleLogout()} className="text-red-400">
                   Logout

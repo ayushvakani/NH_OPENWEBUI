@@ -56,7 +56,8 @@ const DatabaseManager: React.FC<DatabaseManagerProps> = ({ onDataLoaded }) => {
       const data = await apiFetch<DBConnection[]>('/db-connections');
       setConnections(data);
     } catch (error) {
-      setMessage({ type: 'error', text: 'Failed to load connections' });
+      console.warn('Failed to load connections, this is normal if the feature is uninitialized:', error);
+      setConnections([]); // Just default to empty array
     }
   };
 

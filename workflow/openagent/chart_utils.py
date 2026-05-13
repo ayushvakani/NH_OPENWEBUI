@@ -1,44 +1,83 @@
-import plotly.express as px
-import plotly.graph_objects as go
-from typing import List, Dict
-import base64
+"""
+chart_utils.py — OpenAgent Chart Utilities
+──────────────────────────────────────────
+NOTE (Step 3 of workflow/TODO.md):
+  The original kaleido/PNG → base64 approach was removed because:
+  1. The base64 strings exceeded OpenWebUI's rendering limit (truncation bug).
+  2. report_workflow.py already passes raw data arrays to ApexCharts in the
+     generated HTML — no server-side image rendering is needed.
+  3. kaleido requires a separate binary install (often fails in CI/Docker).
+
+What remains:
+  - save_fig_to_file()  → optional static PNG export for e-mail attachments
+  - Helper functions for building Plotly figures (return_fig=True) that callers
+    can use to save or inspect data — but NOT for base64 encoding.
+"""
+from __future__ import annotations
+
+import os
+from typing import Any, Dict, List, Optional
 
 
-def fig_to_base64(fig) -> str:
+# ── Optional static file export (still useful for email attachments) ──────────
+
+def save_fig_to_file(fig: Any, filename: str) -> str:
     """
-    Convert Plotly figure to base64 PNG image
+    Save a Plotly figure to disk as PNG in the ./static directory.
+
+    Returns the file path on success, or an empty string on failure
+    (e.g. kaleido not installed).
+
+    Usage:
+        fig = create_revenue_chart_fig(sales_data)
+        path = save_fig_to_file(fig, "revenue.png")
+        # → "static/revenue.png"  or  ""
     """
-    img_bytes = fig.to_image(format="png", engine="kaleido")
-    return "data:image/png;base64," + base64.b64encode(img_bytes).decode("utf-8")
+    try:
+        import plotly  # noqa: F401 — presence check
+    except ImportError:
+        print("[chart_utils] plotly not installed — skipping save_fig_to_file")
+        return ""
+
+    try:
+        static_dir = os.path.join(os.getcwd(), "static")
+        os.makedirs(static_dir, exist_ok=True)
+        path = os.path.join(static_dir, filename)
+        fig.write_image(path, engine="kaleido")
+        print(f"[chart_utils] Saved chart → {path}")
+        return path
+    except Exception as exc:
+        print(f"[chart_utils] save_fig_to_file failed: {exc}")
+        return ""
 
 
-def save_fig_to_file(fig, filename: str) -> str:
-    """
-    Save Plotly figure to a file in the static directory.
-    Returns the file path.
-    """
-    import os
-    # Ensure static dir exists (though we created it, let's be safe)
-    if not os.path.exists("static"):
-        os.makedirs("static")
-    
-    path = os.path.join("static", filename)
-    fig.write_image(path, engine="kaleido")
-    return path
+# ── Figure builders (return Plotly figure objects, NOT base64) ────────────────
 
-
-def create_revenue_chart_image(sales_data: List[Dict], return_fig: bool = False):
+def create_revenue_chart_fig(
+    sales_data: List[Dict],
+) -> Optional[Any]:
     """
-    Line chart: revenue over time
+    Build a Plotly line-chart figure for revenue over time.
+
+    Returns the figure object so callers can:
+      - save_fig_to_file(fig, "revenue.png")   → PNG file
+      - fig.show()                              → open in browser
+      - fig.to_json()                           → JSON (for embedding)
+
+    Returns None if sales_data is empty or plotly is missing.
     """
     if not sales_data:
-        return None if return_fig else ""
+        return None
+    try:
+        import plotly.express as px
+    except ImportError:
+        print("[chart_utils] plotly not installed")
+        return None
 
     df_dict = {
-        "period": [s["period"] for s in sales_data],
-        "revenue": [s["revenue"] for s in sales_data],
+        "period": [s.get("period", "") for s in sales_data],
+        "revenue": [float(s.get("revenue", 0)) for s in sales_data],
     }
-
     fig = px.line(
         df_dict,
         x="period",
@@ -46,30 +85,29 @@ def create_revenue_chart_image(sales_data: List[Dict], return_fig: bool = False)
         title="Sales Revenue Over Time",
         labels={"revenue": "Revenue ($)", "period": "Period"},
     )
-
-    fig.update_layout(
-        showlegend=False,
-        width=700,
-        height=400
-    )
-
-    if return_fig:
-        return fig
-
-    return fig_to_base64(fig)
+    fig.update_layout(showlegend=False, width=700, height=400)
+    return fig
 
 
-def create_metrics_chart_image(metrics: Dict, return_fig: bool = False):
+def create_metrics_chart_fig(metrics: Dict) -> Optional[Any]:
     """
-    Bar chart: key metrics dashboard
+    Build a Plotly bar-chart figure for key metrics.
+
+    Returns the figure object (see create_revenue_chart_fig for usage).
+    Returns None if plotly is missing.
     """
-    categories = ["Revenue", "Orders", "AOV"]
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print("[chart_utils] plotly not installed")
+        return None
+
+    categories = ["Revenue ($)", "Orders", "Avg Order ($)"]
     values = [
-        metrics["total_revenue"],
-        metrics["total_orders"],
-        metrics["avg_order_value"],
+        float(metrics.get("total_revenue", 0)),
+        float(metrics.get("total_orders", 0)),
+        float(metrics.get("avg_order_value", 0)),
     ]
-
     fig = go.Figure(
         data=[
             go.Bar(
@@ -80,12 +118,10 @@ def create_metrics_chart_image(metrics: Dict, return_fig: bool = False):
             )
         ]
     )
-
     fig.update_layout(
         title="Key Metrics Dashboard",
         showlegend=False,
         width=600,
         height=350,
     )
-
-    return fig_to_base64(fig)
+    return fig

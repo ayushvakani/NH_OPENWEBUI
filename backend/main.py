@@ -464,7 +464,13 @@ ensure_database_schema()
 
 # Use explicit hash handlers to avoid dynamic handler import issues in frozen apps
 
-SECRET_KEY = "supersecretkey"  # Change this in production
+_secret_main = os.getenv("SECRET_KEY", "")
+if not _secret_main:
+    raise RuntimeError(
+        "SECRET_KEY environment variable is not set. "
+        "Copy .env.example to .env and fill in a secure random value."
+    )
+SECRET_KEY = _secret_main  # Loaded from .env
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 1 week
 
@@ -3115,6 +3121,35 @@ if os.environ.get("DESKTOP_MODE") != "1":
     ensure_models()
 else:
     print("Desktop mode: Skipping model pull at startup. Models will be pulled on demand.")
+
+# ==========================================
+# WORKFLOW DASHBOARD PROXY
+# ==========================================
+import httpx
+
+@app.get("/api/dashboard/sales")
+async def get_sales_dashboard(current_user: dict = Depends(get_current_user)):
+    """
+    Relay dashboard data from the workflow server (port 9000) to the frontend.
+    Protected by JWT. Fallback to mock data if the workflow server is down.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            response = await client.get("http://localhost:9000/api/dashboard")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        print(f"[Dashboard Proxy] WARN: Workflow server unreachable: {e}")
+        return {
+            "metrics": {
+                "total_revenue": 0,
+                "total_orders": 0,
+                "avg_order_value": 0
+            },
+            "time_series": [],
+            "insights": "Workflow server is offline. Please start the workflow server on port 9000 to see live data.",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn

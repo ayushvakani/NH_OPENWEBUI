@@ -141,8 +141,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+import os
+
 # ✅ Serve static files (for charts)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+from openagent.services.db_service import get_sales_data
+from openagent.services.llm_service import call_llm
+
+# ✅ Dashboard Endpoint for Frontend
+@app.get("/api/dashboard")
+async def get_dashboard_data():
+    sales = await get_sales_data(limit=30)
+    
+    total_revenue = sum(float(x.get("revenue", 0)) for x in sales)
+    total_orders = len(sales)
+    avg_order_value = total_revenue / total_orders if total_orders else 0.0
+
+    sorted_sales = sorted(sales, key=lambda x: str(x.get("period", "")))
+    
+    insights = await call_llm(
+        f"Data: {total_revenue} revenue, {total_orders} orders. "
+        "Give 1 short sentence insight about sales performance."
+    )
+
+    return {
+        "metrics": {
+            "total_revenue": total_revenue,
+            "total_orders": total_orders,
+            "avg_order_value": avg_order_value
+        },
+        "time_series": [
+            {"period": item.get("period", ""), "revenue": float(item.get("revenue", 0))}
+            for item in sorted_sales
+        ],
+        "insights": insights or "Sales data successfully loaded."
+    }
 
 # ✅ Models endpoint
 @app.get("/v1/models")
