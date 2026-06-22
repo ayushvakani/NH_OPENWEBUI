@@ -449,7 +449,7 @@ def ensure_database_schema():
             with engine.connect() as conn:
                 conn.execute(text("ALTER TABLE users ADD COLUMN web_search_enabled INTEGER DEFAULT 1"))
                 conn.commit()
-            print("✅ web_search_enabled column added successfully")
+            print("web_search_enabled column added successfully")
         
         # Check if uploaded_csvs table has table_name column
         with engine.connect() as conn:
@@ -496,10 +496,17 @@ def is_model_enabled(model_name: str, db) -> bool:
     """Check if a model is enabled in the database"""
     try:
         model = db.query(AIModel).filter(AIModel.name == model_name, AIModel.is_enabled == 1).first()
-        return model is not None
+        if model is not None:
+            return True
+            
+        # Fallback to ALLOWED_OLLAMA_MODELS if the database is completely empty
+        if db.query(AIModel).count() == 0:
+            return model_name in ALLOWED_OLLAMA_MODELS
+            
+        return False
     except Exception:
         # Fallback to ALLOWED_OLLAMA_MODELS if database check fails
-        return True
+        return model_name in ALLOWED_OLLAMA_MODELS
 
 def get_server_setting(db, key: str, default: str = "") -> str:
     """Get a server setting value"""
@@ -636,11 +643,14 @@ ALLOWED_OLLAMA_MODELS = {
     'glm4:9b-chat-q4_0',
     'qwen3:0.6b',
     'llama3.2:1b',
+    'llama3.2:3b',
     'deepseek-coder:latest',
     'llama3.1:8b',
     'nomic-embed-text:latest',
     'gpt-oss:latest',
-    'gemma3:270m'
+    'gemma3:270m',
+    'qwen2:7b',
+    'qwen2.5-coder:7b'
 }
 
 class PromptInput(BaseModel):
@@ -678,9 +688,9 @@ if API_KEYS_STR:
         if stripped_key and len(stripped_key) > 10:  # Basic validation for API key length
             API_KEYS.append(stripped_key)
 
-print(f"🔑 Loaded {len(API_KEYS)} API keys from environment variable")
+print(f"Loaded {len(API_KEYS)} API keys from environment variable")
 if len(API_KEYS) < 50:  # If you expect 50 keys but got fewer
-    print(f"⚠️  Warning: Expected 50 keys but only loaded {len(API_KEYS)}")
+    print(f"Warning: Expected 50 keys but only loaded {len(API_KEYS)}")
     print(f"   Raw environment variable length: {len(API_KEYS_STR)}")
     print(f"   Raw preview: {API_KEYS_STR[:200]}...")
 
@@ -1290,16 +1300,7 @@ def ask_model(data: PromptInput, db=Depends(get_db), current_user: User = Depend
 CSV_UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "csv_uploads")
 os.makedirs(CSV_UPLOAD_DIR, exist_ok=True)
 
-from fastapi.middleware.cors import CORSMiddleware
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS middleware is already configured globally above
 
 @app.post("/upload-csv")
 async def upload_csv(
@@ -3074,7 +3075,7 @@ if not os.environ.get("DESKTOP_MODE") == "1":
     if os.path.exists(frontend_build_dir):
         app.mount("/", SPAStaticFiles(directory=frontend_build_dir, html=True), name="static")
     else:
-        print(f"⚠️  Frontend build directory not found: {frontend_build_dir}")
+        print(f"Warning: Frontend build directory not found: {frontend_build_dir}")
 else:
     print("Running in desktop mode - frontend served by Electron main process")
 
@@ -3106,12 +3107,12 @@ def ensure_models():
     for model in REQUIRED_MODELS:
         try:
             if check_model_exists(model):
-                print(f"✓ Model already available: {model}")
+                print(f"Model already available: {model}")
                 continue
             
             print(f"Pulling model: {model}")
             subprocess.run(["ollama", "pull", model], check=True)
-            print(f"✓ Successfully pulled: {model}")
+            print(f"Successfully pulled: {model}")
         except Exception as e:
             print(f"Failed to pull model {model}: {e}")
 
@@ -3165,5 +3166,5 @@ if __name__ == "__main__":
         threading.Timer(1.5, open_browser).start()
     
     print(f"🚀 Starting server on port {port}")
-    print(f"🌐 Environment: PORT={os.getenv('PORT', 'Not set (using 8000)')}")
+    print(f"Environment: PORT={os.getenv('PORT', 'Not set (using 8000)')}")
     uvicorn.run(app, host="0.0.0.0", port=port)

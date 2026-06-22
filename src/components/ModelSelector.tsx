@@ -11,11 +11,11 @@ import { apiFetch } from '@/lib/api';
 
 // Fallback models in case API fails
 export const fallbackModels = [
-  { id: 'llama3.1:latest', name: 'Llama 3.1', description: 'General / Reasoning', category: 'General', color: 'from-blue-500 to-cyan-600' },
-  { id: 'deepseek-v2:latest', name: 'DeepSeek V2', description: 'Coding + Reasoning', category: 'Coding', color: 'from-green-500 to-emerald-600' },
-  { id: 'qwen2.5vl:latest', name: 'Qwen 2.5 VL', description: 'Multimodal (Text + Image)', category: 'Multimodal', color: 'from-purple-500 to-pink-600' },
-  { id: 'deepseek-coder-v2:latest', name: 'DeepSeek Coder V2', description: 'Advanced Coding', category: 'Coding', color: 'from-green-500 to-emerald-600' },
-  { id: 'gemma3:270m', name: 'Gemma', description: 'General / Fast', category: 'General', color: 'from-blue-500 to-cyan-600' },
+  { id: 'llama3.1:latest', name: 'Llama 3.1 (8B)', description: 'General / Reasoning', category: 'General', color: 'from-blue-500 to-cyan-600' },
+  { id: 'llama3.2:3b', name: 'Llama 3.2 (3B)', description: 'Fast / General', category: 'General', color: 'from-blue-500 to-cyan-600' },
+  { id: 'qwen2:7b', name: 'Qwen 2 (7B)', description: 'General / Chat', category: 'General', color: 'from-purple-500 to-pink-600' },
+  { id: 'qwen2.5-coder:7b', name: 'Qwen 2.5 Coder', description: 'Advanced Coding', category: 'Coding', color: 'from-green-500 to-emerald-600' },
+  { id: 'gemma3:270m', name: 'Gemma 3 (Tiny)', description: 'Lightning Fast', category: 'General', color: 'from-blue-500 to-cyan-600' },
 ];
 
 interface Model {

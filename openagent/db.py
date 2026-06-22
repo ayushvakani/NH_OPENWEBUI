@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-DATABASE_URL = "postgresql+asyncpg://neelakshabhardwaj:123sonu@localhost:5432/mydb"
+DATABASE_URL = "sqlite+aiosqlite:///./mydb.sqlite"
 
 engine = create_async_engine(
     DATABASE_URL,

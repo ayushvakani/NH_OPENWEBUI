@@ -31,7 +31,7 @@ function App() {
 
   useEffect(() => {
     // In Electron, the backend runs on a separate port
-    const backendUrl = 'http://localhost:8000';
+    const backendUrl = 'http://localhost:8001';
     fetch(`${backendUrl}/health`)
       .then(res => res.json())
       .then(data => {

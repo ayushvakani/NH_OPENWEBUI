@@ -422,7 +422,7 @@
 
 import asyncio
 import requests
-from agentscope.agent import AgentBase
+from agentscope.agent import Agent
 from agentscope.message import Msg
 
 from sqlalchemy import select
@@ -538,10 +538,10 @@ def send_email(content):
 
 
 # ================== TOOL ROUTER ==================
-class ToolAgent(AgentBase):
+class ToolAgent(Agent):
 
     def __init__(self):
-        super().__init__()
+        super().__init__(name="ToolAgent")
         self.name = "ToolAgent"
 
     async def reply(self, x: Msg = None):

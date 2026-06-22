@@ -27,7 +27,7 @@ export const useDashboardData = () => {
         throw new Error("Unauthorized");
       }
 
-      const response = await fetch('http://localhost:8000/api/dashboard/sales', {
+      const response = await fetch('http://localhost:8001/api/dashboard/sales', {
         headers: {
           'Authorization': `Bearer ${token}`
         }

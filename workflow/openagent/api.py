@@ -116,6 +116,12 @@
 #     }
 
 
+import sys
+import io
+# Force UTF-8 on all stdout/stderr — prevents Windows cp1252 charmap crashes
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -180,32 +186,63 @@ async def get_dashboard_data():
         "insights": insights or "Sales data successfully loaded."
     }
 
-# ✅ Models endpoint
+MODELS_LIST = {
+    "object": "list",
+    "data": [
+        {
+            "id": "report-model",
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "openagent",
+            "name": "report-model",
+        },
+        {
+            "id": "insights-model",
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "openagent",
+            "name": "insights-model",
+        },
+        {
+            "id": "agent-model",
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "openagent",
+            "name": "agent-model",
+        },
+    ]
+}
+
+# ✅ Models endpoints — both /v1/models and /models for OpenWebUI compatibility
 @app.get("/v1/models")
+@app.get("/models")
 async def get_models():
-    return {
-        "object": "list",
-        "data": [
-            {"id": "agent-model", "object": "model"},
-            {"id": "insights-model", "object": "model"},
-            {"id": "report-model", "object": "model"},
-        ]
-    }
+    return MODELS_LIST
 
 
 # ✅ Chat / Insights / Report endpoint
 @app.post("/v1/chat/completions")
+@app.post("/chat/completions")
 async def chat(req: dict):
 
-    # 🔹 1. Get user input
+    # 🔹 1. Get user input and selected model
     user_msg = req["messages"][-1]["content"]
+    requested_model = req.get("model", "")
 
-    # 🔹 2. Choose workflow
-    workflow = choose_workflow(user_msg)
+    # 🔹 2. Choose workflow (Priority to explicitly selected model)
+    if "report-model" in requested_model:
+        workflow = "report"
+    elif "insights-model" in requested_model:
+        workflow = "insights"
+    elif "agent-model" in requested_model:
+        workflow = "chat"
+    else:
+        # Fallback to text parsing if no valid model specified
+        workflow = choose_workflow(user_msg)
 
     # 🔹 3. Run workflow (FIXED)
     result = None
-    model_used = "agent-model"
+    model_used = requested_model or "agent-model"
 
     try:
         if workflow == "insights":
@@ -230,7 +267,7 @@ async def chat(req: dict):
     # 🔹 Debug logs
     print("WORKFLOW:", workflow)
     print("MODEL:", model_used)
-    print("RESULT:", result)
+    # print("RESULT:", result) # Commented out to prevent Windows cp1252 charmap codec crashes!
 
     # ================== STREAMING ==================
     if req.get("stream"):

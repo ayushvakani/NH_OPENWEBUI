@@ -261,7 +261,7 @@ const Admin = () => {
 
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/admin/models/pull-ollama`, {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001'}/admin/models/pull-ollama`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

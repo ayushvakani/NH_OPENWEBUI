@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiService, chainModelsAPI, uploadFilesAPI, searchYouTubeAPI, searchRedditAPI, searchAcademicAPI, searchCryptoAPI, getChatHistoryAPI, saveChatMessageAPI, askModelStream, chainModelsStream, askModelStreamWithSearch, apiFetch, getOCRLanguagesAPI, performOCRAPI, performBatchOCRAPI } from '@/lib/api';
-import { getUserInfo, logoutAPI } from '@/lib/api';
+import { getUserInfo, logoutAPI, getToken } from '@/lib/api';
 import { saveMessage } from '@/lib/chatHistory';
 import DatabaseManager from '@/components/DatabaseManager';
 import { ToolsPanel } from '@/components/ToolsPanel';

@@ -35,11 +35,14 @@ ALLOWED_OLLAMA_MODELS = {
     'glm4:9b-chat-q4_0',
     'qwen3:0.6b',
     'llama3.2:1b',
+    'llama3.2:3b',
     'deepseek-coder:latest',
     'llama3.1:8b',
     'nomic-embed-text:latest',
     'gpt-oss:latest',
-    'gemma3:270m'
+    'gemma3:270m',
+    'qwen2:7b',
+    'qwen2.5-coder:7b'
 }
 
 OLLAMA_BASE_URL = "http://localhost:11434"

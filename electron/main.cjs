@@ -28,7 +28,7 @@ function createWindow() {
 
   // Load the app
   if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.loadURL('http://localhost:3001');
   } else {
     // In packaged apps, load the built frontend from extraResources
     const indexPath = path.join(process.resourcesPath, 'dist', 'index.html');

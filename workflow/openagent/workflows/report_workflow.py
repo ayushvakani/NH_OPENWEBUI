@@ -8,7 +8,7 @@ from openagent.tools.emailer import send_email
 
 
 def safe_parse(text: str) -> dict:
-    """Safely parse JSON from LLM output — strips markdown fences if present."""
+    """Safely parse JSON from LLM output - strips markdown fences if present."""
     try:
         # Strip ```json ... ``` fences
         clean = text.strip()
@@ -41,11 +41,12 @@ async def run_workflow(user_input: str) -> str:
         elapsed = (datetime.now() - run_start).total_seconds()
         entry = f"[{elapsed:06.2f}s] {msg}"
         logs.append(entry)
-        print(f"*** REPORT | {entry}")
+        safe_entry = entry.encode('ascii', 'replace').decode('ascii')
+        print(f"*** REPORT | {safe_entry}")
 
     log("START")
 
-    # ── STAGE 1: Parse request ────────────────────────────────────────────────
+    # -- STAGE 1: Parse request ------------------------------------------------
     start_date = "2024-01-01"
     end_date = "2024-12-31"
     try:
@@ -58,11 +59,11 @@ async def run_workflow(user_input: str) -> str:
         parsed = safe_parse(parsed_raw)
         start_date = parsed.get("start_date", start_date)
         end_date = parsed.get("end_date", end_date)
-        log(f"Stage 1 OK: {start_date} → {end_date}")
+        log(f"Stage 1 OK: {start_date} -> {end_date}")
     except Exception:
         log(f"Stage 1 WARN (using defaults): {traceback.format_exc(limit=3)}")
 
-    # ── STAGE 2: Fetch sales data ─────────────────────────────────────────────
+    # -- STAGE 2: Fetch sales data ---------------------------------------------
     sales: list[dict] = []
     try:
         log("Stage 2: fetching sales data from DB")
@@ -82,9 +83,9 @@ async def run_workflow(user_input: str) -> str:
         )
 
     if not sales:
-        log("Stage 2 WARN: no records in range — report will show zeros")
+        log("Stage 2 WARN: no records in range - report will show zeros")
 
-    # ── STAGE 3: Compute metrics ──────────────────────────────────────────────
+    # -- STAGE 3: Compute metrics ----------------------------------------------
     try:
         log("Stage 3: computing metrics")
         total_revenue = sum(float(x.get("revenue", 0)) for x in sales)
@@ -101,7 +102,7 @@ async def run_workflow(user_input: str) -> str:
         log(f"Stage 3 ERROR:\n{tb}")
         return _error_html("Metrics Error", tb)
 
-    # ── STAGE 4: Build chart data arrays ──────────────────────────────────────
+    # -- STAGE 4: Build chart data arrays --------------------------------------
     try:
         log("Stage 4: building chart data arrays")
         # Sort by period ascending for chronological charts
@@ -114,7 +115,7 @@ async def run_workflow(user_input: str) -> str:
         log(f"Stage 4 ERROR:\n{tb}")
         chart_dates, chart_revenues = [], []
 
-    # ── STAGE 5: LLM insights (with timeout + fallback) ───────────────────────
+    # -- STAGE 5: LLM insights (with timeout + fallback) -----------------------
     FALLBACK_INSIGHTS = (
         "Insights generation skipped (LLM unavailable or timed out). "
         "Review the raw metrics above for a manual summary."
@@ -135,7 +136,7 @@ async def run_workflow(user_input: str) -> str:
     except Exception:
         log(f"Stage 5 WARN (using fallback): {traceback.format_exc(limit=2)}")
 
-    # ── STAGE 6: Optional email ───────────────────────────────────────────────
+    # -- STAGE 6: Optional email -----------------------------------------------
     email_result = ""
     if "email" in user_input.lower():
         try:
@@ -149,7 +150,7 @@ async def run_workflow(user_input: str) -> str:
         except Exception:
             log(f"Stage 6 WARN: {traceback.format_exc(limit=2)}")
 
-    # ── STAGE 7: Render HTML ──────────────────────────────────────────────────
+    # -- STAGE 7: Render HTML --------------------------------------------------
     log("Stage 7: rendering HTML")
     log_text = "\n".join(logs)
     insights_html = insights.replace("\n", "<br>")
@@ -182,11 +183,11 @@ async def run_workflow(user_input: str) -> str:
             <h1 class="text-3xl font-bold bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
                 Sales Intelligence Dashboard
             </h1>
-            <p class="text-slate-400 mt-1">Automated report · {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+            <p class="text-slate-400 mt-1">Automated report - {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         </div>
         <div class="text-right">
             <div class="text-xs text-emerald-400 font-mono uppercase tracking-wider">Live Status: Active</div>
-            <div class="text-xs text-slate-500 font-mono">{start_date} → {end_date}</div>
+            <div class="text-xs text-slate-500 font-mono">{start_date} -> {end_date}</div>
         </div>
     </div>
 
@@ -195,7 +196,7 @@ async def run_workflow(user_input: str) -> str:
         <div class="card p-6">
             <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Total Revenue</div>
             <div class="text-3xl font-bold text-white">${metrics['total_revenue']:,.2f}</div>
-            <div class="text-emerald-400 text-xs mt-2">Period: {start_date} → {end_date}</div>
+            <div class="text-emerald-400 text-xs mt-2">Period: {start_date} -> {end_date}</div>
         </div>
         <div class="card p-6">
             <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Total Orders</div>
@@ -224,7 +225,7 @@ async def run_workflow(user_input: str) -> str:
     <!-- AI Insights -->
     <div class="card p-6 border-emerald-500/30 bg-emerald-500/5 mb-6">
         <div class="flex items-center gap-2 mb-4">
-            <span class="text-emerald-400 text-lg">🧠</span>
+            <span class="text-emerald-400 text-lg">-</span>
             <h3 class="text-base font-semibold text-emerald-400">AI Financial Insights</h3>
         </div>
         <div class="text-slate-300 text-sm leading-relaxed">{insights_html}</div>
@@ -292,7 +293,7 @@ def _error_html(title: str, message: str) -> str:
 <body class="p-8 flex items-center justify-center min-h-screen">
     <div class="max-w-xl w-full bg-red-950/40 border border-red-800 rounded-2xl p-8">
         <div class="flex items-center gap-3 mb-4">
-            <span class="text-3xl">⚠️</span>
+            <span class="text-3xl">--</span>
             <h1 class="text-xl font-bold text-red-400">{title}</h1>
         </div>
         <div class="text-slate-300 text-sm leading-relaxed">{message}</div>

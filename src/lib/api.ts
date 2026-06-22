@@ -91,9 +91,11 @@ class ApiService {
   // Single model request
   async askModel(prompt: string, model: string, session_id?: string): Promise<ApiResponse> {
     try {
+      const token = getToken();
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
       };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
       const response = await fetch(`${this.baseUrl}/ask`, {
         method: 'POST',
         headers,
@@ -177,6 +179,7 @@ export async function* askModelStreamWithSearch(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
 
   // Create an AbortController with a 10-minute timeout
   const controller = new AbortController();
@@ -542,6 +545,7 @@ export async function* askModelStream(prompt: string, model: string, session_id?
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const response = await fetch(`${API_BASE_URL}/ask`, {
     method: 'POST',
     headers,
@@ -573,6 +577,7 @@ export async function* chainModelsStream(prompt: string, models: string[], token
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const response = await fetch(`${API_BASE_URL}/chain`, {
     method: 'POST',
     headers,
