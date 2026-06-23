@@ -1336,20 +1336,13 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
             )}
           </span>
           <div className="flex items-center gap-4">
-            {/* Data Analysis Toggle */}
+            {/* Data Analysis Redirect */}
             <Button
               onClick={() => {
-                setDataAnalysisMode(!dataAnalysisMode);
-                // Reset relevant states when switching modes
-                if (dataAnalysisMode) {
-                  setCsvInfo({ has_csv: false });
-                } else {
-                  // Reset any data analysis specific states when turning off
-                  setMessages(prev => prev.filter(m => !m.isDataAnalysis));
-                }
+                window.open('http://localhost:8080', '_blank');
               }}
-              variant={dataAnalysisMode ? "default" : "outline"}
-              className={`flex items-center gap-1 rounded-xl ${dataAnalysisMode ? 'bg-gradient-to-r from-[#6C47FF] to-[#A259FF] text-white hover:from-[#5A3BD9] hover:to-[#8C4DFF]' : 'text-slate-200 hover:bg-slate-700/50 border-slate-600'}`}
+              variant="outline"
+              className="flex items-center gap-1 rounded-xl text-slate-200 hover:bg-slate-700/50 border-slate-600"
             >
               <BarChart3 className="h-4 w-4 mr-1" />
               Data Analysis
