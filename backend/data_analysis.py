@@ -297,6 +297,18 @@ def load_csv_file(file_path):
         print(f"Error detecting encoding: {str(e)}")
         detected_enc = 'utf-8'
     
+    if file_path.lower().endswith(('.xlsx', '.xls')):
+        try:
+            print(f"Detected Excel file, attempting to read with pd.read_excel: {file_path}")
+            df = pd.read_excel(file_path)
+            if df is not None and not df.empty:
+                print(f"Successfully read Excel file. Shape: {df.shape}")
+                df.columns = df.columns.astype(str).str.strip()
+                return df
+        except Exception as e:
+            print(f"Failed to read Excel file: {str(e)}")
+            return None
+
     methods = [
         (lambda: pd.read_csv(file_path, encoding=detected_enc), f"detected encoding ({detected_enc})"),
         (lambda: pd.read_csv(file_path, encoding='utf-8'), "utf-8"),

@@ -9,6 +9,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Admin from './pages/Admin';
 import Dashboard from '../dashboard/Dashboard';
+import { AnalyticsPanel } from './components/AnalyticsPanel';
 import React, { useEffect, useState } from 'react';
 
 const queryClient = new QueryClient();
@@ -71,6 +72,7 @@ function App() {
                 <Dashboard />
               </ProtectedRoute>
             } />
+            <Route path="/analytics" element={<AnalyticsPanel open={true} onClose={() => window.close()} />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

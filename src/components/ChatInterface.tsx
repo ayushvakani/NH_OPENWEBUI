@@ -16,6 +16,7 @@ import { getUserInfo, logoutAPI, getToken } from '@/lib/api';
 import { saveMessage } from '@/lib/chatHistory';
 import DatabaseManager from '@/components/DatabaseManager';
 import { ToolsPanel } from '@/components/ToolsPanel';
+import { AnalyticsPanel } from '@/components/AnalyticsPanel';
 
 import { models } from '@/components/ModelSelector';
 import ReactMarkdown from 'react-markdown';
@@ -390,18 +391,25 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
   // Dashboard Viewer states
   const [dashboardHtml, setDashboardHtml] = useState<string | null>(null);
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  const [analyticsPanelOpen, setAnalyticsPanelOpen] = useState(false);
   
-  // Automatically detect the latest dashboard in the chat history
+  // Automatically detect the latest HTML artifact in the chat history and auto-open the preview
   useEffect(() => {
-    const lastDashboard = [...messages].reverse().find(msg => 
-      !msg.isUser && msg.content.includes('<!DOCTYPE html>') && msg.content.includes('ApexCharts')
+    const lastHtmlMsg = [...messages].reverse().find(msg => 
+      !msg.isUser && (
+        /```html[\s\S]*?```/i.test(msg.content) ||
+        msg.content.includes('<!DOCTYPE html>') ||
+        msg.content.includes('<html')
+      )
     );
     
-    if (lastDashboard) {
-      // Extract the HTML content (similar logic to the button click)
-      const match = /```html\n([\s\S]*?)\n```/.exec(lastDashboard.content);
-      const htmlContent = match ? match[1] : lastDashboard.content;
+    if (lastHtmlMsg) {
+      // Extract the HTML content — prefer fenced code block, fallback to raw
+      const fencedMatch = /```html\n([\s\S]*?)\n```/i.exec(lastHtmlMsg.content);
+      const htmlContent = fencedMatch ? fencedMatch[1] : lastHtmlMsg.content;
       setDashboardHtml(htmlContent);
+      // Auto-open the side panel whenever a new HTML artifact is detected
+      setIsDashboardOpen(true);
     }
   }, [messages]);
 
@@ -1344,7 +1352,7 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
               variant="outline"
               className="flex items-center gap-1 rounded-xl text-slate-200 hover:bg-slate-700/50 border-slate-600"
             >
-              <BarChart3 className="h-4 w-4 mr-1" />
+              <Database className="h-4 w-4 mr-1" />
               Data Analysis
             </Button>
             
@@ -1471,7 +1479,7 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
                     className="text-xs bg-slate-800/50 hover:bg-slate-700/70 text-slate-200 border-slate-600 rounded-xl"
                   >
                     <Upload className="h-4 w-4 mr-1" />
-                    Upload CSV
+                    Upload Dataset
                   </Button>
                 )}
               </div>
@@ -1625,7 +1633,9 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
                                   const match = /language-(\w+)/.exec(className || '');
                                   const language = match ? match[1] : '';
                                   const codeString = String(children).replace(/\n$/, '');
-                                  const isHtmlDashboard = language === 'html' && (codeString.includes('ApexCharts') || codeString.includes('<!DOCTYPE html>'));
+                                  // Detect any HTML artifact — complete documents or fragments with tags
+                                  const isHtmlArtifact = language === 'html' || 
+                                    (language === '' && (codeString.trimStart().startsWith('<!DOCTYPE') || codeString.trimStart().startsWith('<html')));
 
                                   return !inline ? (
                                     <div className="relative group my-2">
@@ -1635,7 +1645,7 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
                                         <code>{children}</code>
                                       </pre>
                                       <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        {isHtmlDashboard && (
+                                        {isHtmlArtifact && (
                                           <Button
                                             size="sm"
                                             variant="secondary"
@@ -1646,7 +1656,7 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
                                             }}
                                           >
                                             <BarChart3 className="h-4 w-4" />
-                                            View Dashboard
+                                            Preview
                                           </Button>
                                         )}
                                         <CopyButton text={codeString} />
@@ -2163,7 +2173,7 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
             ref={csvInputRef}
             onChange={handleCSVUpload}
             className="hidden"
-            accept=".csv"
+            accept=".csv,.xls,.xlsx"
           />
           
           {/* OCR Hidden Input */}
@@ -2176,37 +2186,58 @@ export const ChatInterface = ({ chatId, onLogout }: ChatInterfaceProps) => {
             accept=".png,.jpg,.jpeg,.bmp,.tiff,.gif,.webp"
           />
       </div>
-      {/* Dashboard Viewer Dialog */}
-      <Dialog open={isDashboardOpen} onOpenChange={setIsDashboardOpen}>
-        <DialogContent className="max-w-[95vw] w-[95vw] h-[95vh] p-0 overflow-hidden bg-slate-900 border-slate-700">
-          <div className="flex flex-col h-full">
-            <div className="flex items-center justify-between p-4 border-b border-slate-700 bg-slate-800">
-              <DialogTitle className="text-xl font-bold text-white flex items-center gap-2">
-                <BarChart3 className="h-6 w-6 text-emerald-400" />
-                Interactive Dashboard Viewer
-              </DialogTitle>
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                onClick={() => setIsDashboardOpen(false)}
-                className="text-slate-400 hover:text-white"
-              >
-                Close
-              </Button>
-            </div>
-            <div className="flex-1 w-full bg-white overflow-auto">
-              {dashboardHtml && (
-                <iframe
-                  srcDoc={dashboardHtml}
-                  className="w-full h-full border-none"
-                  title="Interactive Dashboard"
-                  sandbox="allow-scripts allow-popups allow-forms"
-                />
-              )}
-            </div>
+      {/* HTML Artifact Preview — OpenWebUI-style right slide-in panel */}
+      <div
+        className={`fixed top-0 right-0 h-full z-50 flex flex-col bg-slate-950 border-l border-slate-700 shadow-2xl transition-all duration-300 ease-in-out ${
+          isDashboardOpen ? 'w-[48vw] opacity-100 translate-x-0' : 'w-0 opacity-0 translate-x-full pointer-events-none'
+        }`}
+        style={{ maxWidth: '900px', minWidth: isDashboardOpen ? '400px' : '0' }}
+      >
+        {/* Panel Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700 bg-slate-900 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-emerald-400" />
+            <span className="font-semibold text-white text-sm">HTML Preview</span>
+            <span className="text-xs text-slate-400 bg-slate-800 px-2 py-0.5 rounded-full">Live</span>
           </div>
-        </DialogContent>
-      </Dialog>
+          <div className="flex items-center gap-2">
+            {/* Open in new tab */}
+            {dashboardHtml && (
+              <button
+                onClick={() => {
+                  const blob = new Blob([dashboardHtml], { type: 'text/html' });
+                  const url = URL.createObjectURL(blob);
+                  window.open(url, '_blank');
+                }}
+                className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700 transition-colors"
+                title="Open in new tab"
+              >
+                ↗ New Tab
+              </button>
+            )}
+            <button
+              onClick={() => setIsDashboardOpen(false)}
+              className="text-slate-400 hover:text-white p-1.5 rounded hover:bg-slate-700 transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        {/* iframe Renderer */}
+        <div className="flex-1 bg-white overflow-auto">
+          {dashboardHtml && isDashboardOpen && (
+            <iframe
+              key={dashboardHtml.slice(0, 50)} /* remount when html changes */
+              srcDoc={dashboardHtml}
+              className="w-full h-full border-none"
+              title="HTML Artifact Preview"
+              sandbox="allow-scripts allow-popups allow-forms allow-same-origin"
+            />
+          )}
+        </div>
+      </div>
+      <AnalyticsPanel open={analyticsPanelOpen} onClose={() => setAnalyticsPanelOpen(false)} />
     </div>
   );
 };

@@ -190,25 +190,11 @@ MODELS_LIST = {
     "object": "list",
     "data": [
         {
-            "id": "report-model",
+            "id": "NemHem-AI",
             "object": "model",
             "created": 1700000000,
             "owned_by": "openagent",
-            "name": "report-model",
-        },
-        {
-            "id": "insights-model",
-            "object": "model",
-            "created": 1700000000,
-            "owned_by": "openagent",
-            "name": "insights-model",
-        },
-        {
-            "id": "agent-model",
-            "object": "model",
-            "created": 1700000000,
-            "owned_by": "openagent",
-            "name": "agent-model",
+            "name": "NemHem AI",
         },
     ]
 }
@@ -230,7 +216,7 @@ async def chat(req: dict):
     requested_model = req.get("model", "")
 
     # 🔹 2. Choose workflow (Priority to explicitly selected model)
-    if "report-model" in requested_model:
+    if "NemHem" in requested_model or "report-model" in requested_model:
         workflow = "report"
     elif "insights-model" in requested_model:
         workflow = "insights"
@@ -251,7 +237,7 @@ async def chat(req: dict):
 
         elif workflow == "report":
             result = await report_workflow(user_msg)
-            model_used = "report-model"
+            model_used = "NemHem-AI"
 
         else:
             result = await chat_workflow(user_msg)

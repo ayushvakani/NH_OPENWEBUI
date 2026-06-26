@@ -82,8 +82,13 @@ import requests
 import random
 import io
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+_here = Path(__file__).resolve().parent
+_root = _here.parent
+load_dotenv(_root / ".env", override=False)
+load_dotenv(_here / ".env", override=False)
+
 
 try:
     from ddgs import DDGS
@@ -494,6 +499,10 @@ def get_db():
 
 def is_model_enabled(model_name: str, db) -> bool:
     """Check if a model is enabled in the database"""
+    # OpenWebUI models are always considered enabled - they're managed by OpenWebUI
+    if model_name.startswith("openwebui:"):
+        return True
+    
     try:
         model = db.query(AIModel).filter(AIModel.name == model_name, AIModel.is_enabled == 1).first()
         if model is not None:
@@ -1236,6 +1245,101 @@ def ask_model(data: PromptInput, db=Depends(get_db), current_user: User = Depend
     
     full_prompt += context + f"Based on the above search results and context, please answer the following question: {data.prompt}\nAI:"
 
+    # ----------------------------------------------------------------
+    # Route: OpenWebUI models (prefixed with "openwebui:")
+    # ----------------------------------------------------------------
+    OPENWEBUI_BASE_URL_LOCAL = os.environ.get("OPENWEBUI_BASE_URL", "http://localhost:8080")
+    OPENWEBUI_API_KEY_LOCAL = os.environ.get("OPENWEBUI_API_KEY", "")
+
+    if data.model.startswith("openwebui:"):
+        # Extract the actual model ID (strip the prefix)
+        actual_model_id = data.model[len("openwebui:"):]
+        
+        if not OPENWEBUI_API_KEY_LOCAL:
+            raise HTTPException(status_code=503, detail="OpenWebUI integration not configured (missing API key).")
+        
+        openwebui_chat_url = f"{OPENWEBUI_BASE_URL_LOCAL}/api/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENWEBUI_API_KEY_LOCAL}",
+            "Content-Type": "application/json"
+        }
+        
+        # Build OpenAI-compatible messages payload
+        owui_payload = {
+            "model": actual_model_id,
+            "messages": [{"role": "user", "content": full_prompt}],
+            "stream": True,
+        }
+        
+        def stream_openwebui():
+            # First, yield the search results as a separate message
+            if searxng_context:
+                yield json.dumps({
+                    "type": "search_results",
+                    "content": searxng_context,
+                    "done": False
+                }) + "\n"
+            
+            try:
+                with requests.post(
+                    openwebui_chat_url,
+                    headers=headers,
+                    json=owui_payload,
+                    stream=True,
+                    timeout=600
+                ) as response:
+                    if not response.ok:
+                        err = response.text[:400]
+                        yield json.dumps({
+                            "type": "error",
+                            "error": f"OpenWebUI error ({response.status_code}): {err}",
+                            "done": True
+                        }) + "\n"
+                        return
+                    
+                    # Parse Server-Sent Events (SSE) format from OpenWebUI
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        try:
+                            decoded = line.decode("utf-8")
+                            if decoded.startswith("data: "):
+                                payload_str = decoded[6:]
+                                if payload_str.strip() == "[DONE]":
+                                    yield json.dumps({"type": "model_response", "done": True}) + "\n"
+                                    break
+                                chunk_json = json.loads(payload_str)
+                                choices = chunk_json.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    finish_reason = choices[0].get("finish_reason")
+                                    done = finish_reason is not None
+                                    if content or done:
+                                        yield json.dumps({
+                                            "type": "model_response",
+                                            "response": content,
+                                            "done": done
+                                        }) + "\n"
+                                    if done:
+                                        break
+                        except Exception:
+                            continue
+                
+                yield json.dumps({"type": "model_response", "done": True}) + "\n"
+            
+            except Exception as e:
+                yield json.dumps({
+                    "type": "error",
+                    "error": f"OpenWebUI connection error: {str(e)}",
+                    "done": True
+                }) + "\n"
+        
+        return StreamingResponse(stream_openwebui(), media_type="application/jsonl")
+
+    # ----------------------------------------------------------------
+    # Route: Local Ollama models
+    # ----------------------------------------------------------------
     # Ensure Ollama is running (lazy initialization)
     ensure_ollama_running()
     
@@ -1319,10 +1423,10 @@ async def upload_csv(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
         
-    if not file.filename.lower().endswith('.csv'):
+    if not file.filename.lower().endswith(('.csv', '.xls', '.xlsx')):
         raise HTTPException(
             status_code=400, 
-            detail=f"Invalid file type: {file.filename}. Only CSV files are allowed"
+            detail=f"Invalid file type: {file.filename}. Only CSV and Excel files are allowed"
         )
     
     # Create unique filename to avoid conflicts
@@ -1722,6 +1826,21 @@ def upload_files(files: List[UploadFile] = File(...), session_id: str = Query(..
                 image = Image.open(file_path)
                 text = pytesseract.image_to_string(image)
                 extracted_text = text
+            except Exception as e:
+                extracted_text = None
+        elif filename.lower().endswith((".csv")):
+            try:
+                import pandas as pd
+                df = pd.read_csv(file_path)
+                # Convert first 500 rows to markdown/csv string to avoid blowing up context
+                extracted_text = df.head(500).to_csv(index=False)
+            except Exception as e:
+                extracted_text = None
+        elif filename.lower().endswith((".xls", ".xlsx")):
+            try:
+                import pandas as pd
+                df = pd.read_excel(file_path)
+                extracted_text = df.head(500).to_csv(index=False)
             except Exception as e:
                 extracted_text = None
         
@@ -2300,6 +2419,73 @@ def get_enabled_models(
         }
         for model in models
     ]
+
+# ============================================================================
+# OPENWEBUI MODEL INTEGRATION
+# ============================================================================
+
+OPENWEBUI_BASE_URL = os.environ.get("OPENWEBUI_BASE_URL", "http://localhost:8080")
+OPENWEBUI_API_KEY = os.environ.get("OPENWEBUI_API_KEY", "")
+
+@app.get("/models/openwebui")
+def get_openwebui_models(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Fetch available models from the OpenWebUI instance (localhost:8080).
+    Returns models with source='openwebui' so the frontend can show them
+    in the model selector with a distinct badge.
+    """
+    if not OPENWEBUI_API_KEY:
+        return []
+    
+    try:
+        headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}"}
+        
+        # Fetch both Ollama models and custom OpenWebUI models
+        resp = requests.get(
+            f"{OPENWEBUI_BASE_URL}/api/models",
+            headers=headers,
+            timeout=5
+        )
+        if not resp.ok:
+            print(f"OpenWebUI models fetch failed: {resp.status_code} {resp.text[:200]}")
+            return []
+        
+        data = resp.json()
+        models_raw = data.get("data", data) if isinstance(data, dict) else data
+        
+        result = []
+        for m in models_raw:
+            model_id = m.get("id", "")
+            model_name = m.get("name", model_id)
+            # Categorize
+            name_lower = model_name.lower() + model_id.lower()
+            if any(k in name_lower for k in ["coder", "deepseek", "codellama"]):
+                category = "Coding"
+            elif any(k in name_lower for k in ["vision", "vl", "multimodal"]):
+                category = "Multimodal"
+            elif "embed" in name_lower:
+                category = "Embedding"
+            elif any(k in name_lower for k in ["report", "insight", "agent", "arena"]):
+                category = "Workflow"
+            else:
+                category = "General"
+            
+            result.append({
+                "id": f"openwebui:{model_id}",  # Prefix to identify source
+                "name": model_name,
+                "description": m.get("description", category),
+                "category": category,
+                "source": "openwebui",
+                "original_id": model_id
+            })
+        
+        return result
+    except Exception as e:
+        print(f"Error fetching OpenWebUI models: {e}")
+        return []
+
 
 # Sync models with ALLOWED_OLLAMA_MODELS (admin only)
 @app.post("/admin/models/sync-ollama")
@@ -3093,6 +3279,7 @@ def check_model_exists(model_name):
             ["ollama", "list"], 
             capture_output=True, 
             text=True, 
+            stdin=subprocess.DEVNULL,
             timeout=5
         )
         if result.returncode == 0:
@@ -3107,21 +3294,33 @@ def ensure_models():
     for model in REQUIRED_MODELS:
         try:
             if check_model_exists(model):
-                print(f"Model already available: {model}")
+                print(f"Model already available: {model}", flush=True)
                 continue
             
-            print(f"Pulling model: {model}")
-            subprocess.run(["ollama", "pull", model], check=True)
-            print(f"Successfully pulled: {model}")
+            print(f"Pulling model: {model}", flush=True)
+            subprocess.run(["ollama", "pull", model], stdin=subprocess.DEVNULL, check=True)
+            print(f"Successfully pulled: {model}", flush=True)
         except Exception as e:
-            print(f"Failed to pull model {model}: {e}")
+            print(f"Failed to pull model {model}: {e}", flush=True)
+
 
 # Only ensure models if not in desktop mode (to avoid blocking startup)
+# Run in background thread so uvicorn can start immediately
+import threading
+def _ensure_models_bg():
+    try:
+        ensure_models()
+        print("Background model check complete.", flush=True)
+    except Exception as e:
+        print(f"Background model check error: {e}", flush=True)
+
 if os.environ.get("DESKTOP_MODE") != "1":
-    # Ensure models are present before starting the server (in server mode)
-    ensure_models()
+    _t = threading.Thread(target=_ensure_models_bg, daemon=True)
+    _t.start()
+    print("Model check started in background.", flush=True)
 else:
-    print("Desktop mode: Skipping model pull at startup. Models will be pulled on demand.")
+    print("Desktop mode: Skipping model pull at startup.", flush=True)
+
 
 # ==========================================
 # WORKFLOW DASHBOARD PROXY
@@ -3165,6 +3364,6 @@ if __name__ == "__main__":
             webbrowser.open_new("http://localhost:8000")
         threading.Timer(1.5, open_browser).start()
     
-    print(f"🚀 Starting server on port {port}")
+    print(f"Starting server on port {port}")
     print(f"Environment: PORT={os.getenv('PORT', 'Not set (using 8000)')}")
     uvicorn.run(app, host="0.0.0.0", port=port)

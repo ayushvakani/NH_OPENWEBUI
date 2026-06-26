@@ -5,6 +5,8 @@ from datetime import datetime
 from openagent.services.db_service import get_sales_data
 from openagent.services.llm_service import call_llm
 from openagent.tools.emailer import send_email
+from openagent.services.market_service import get_market_data
+from openagent.tools.summarizer import structured_summary, llm_summary
 
 
 def safe_parse(text: str) -> dict:
@@ -123,15 +125,25 @@ async def run_workflow(user_input: str) -> str:
     insights = FALLBACK_INSIGHTS
     try:
         log("Stage 5: generating LLM insights")
-        insights = await call_llm(
+        
+        # Get data from insights-model tools
+        market = await get_market_data()
+        structured = structured_summary(sales)
+        one_line = await llm_summary(sales, market)
+        
+        llm_insights = await call_llm(
             f"Data: {metrics}\n"
             f"First 3 records: {sorted_sales[:3]}\n\n"
             "Write ONLY:\n"
             "- 3 key insights (bullet points)\n"
             "- 1 anomaly detected\n"
             "- 1 recommendation\n"
-            "Be concise. Max 150 words total."
+            "Be concise. Max 150 words total. Do NOT use markdown bold (**) formatting."
         )
+        
+        # Combine insights
+        insights = f"<strong>Executive Summary:</strong><br>{structured.replace(chr(10), '<br>')}<br><br><strong>Market Context:</strong><br>{one_line}<br><br><strong>Analysis:</strong><br>{llm_insights}"
+        
         log(f"Stage 5 OK: {len(insights)} chars")
     except Exception:
         log(f"Stage 5 WARN (using fallback): {traceback.format_exc(limit=2)}")
@@ -153,7 +165,10 @@ async def run_workflow(user_input: str) -> str:
     # -- STAGE 7: Render HTML --------------------------------------------------
     log("Stage 7: rendering HTML")
     log_text = "\n".join(logs)
-    insights_html = insights.replace("\n", "<br>")
+    
+    # Clean up markdown formatting (remove ** and replace bullet * with HTML bullets)
+    insights_html = insights.replace("**", "").replace("\n", "<br>")
+    insights_html = insights_html.replace("<br>* ", "<br>&bull; ")
     email_html = (
         f'<div class="mt-6 p-4 bg-blue-500/10 border border-blue-500/20 '
         f'rounded-lg text-blue-300 text-sm">{email_result}</div>'

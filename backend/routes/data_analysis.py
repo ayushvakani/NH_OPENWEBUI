@@ -2,12 +2,12 @@
 import json
 import time
 import os
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
 
-from models import get_db, UploadedCSV
+from models import get_db, UploadedCSV, User
 from auth import get_current_user
 from config import CSV_UPLOAD_DIR, ALLOWED_OLLAMA_MODELS, OLLAMA_BASE_URL
 from data_analysis import (
@@ -29,14 +29,27 @@ class CSVUploadResponse(BaseModel):
     dtypes: dict[str, str]
     sample_data: list[dict]
 
+async def get_optional_current_user(request: Request, db=Depends(get_db)):
+    try:
+        return await get_current_user(request, db)
+    except HTTPException:
+        dummy = db.query(User).filter_by(username="guest_dashboard").first()
+        if not dummy:
+            dummy = User(username="guest_dashboard", password_hash="dummy")
+            db.add(dummy)
+            db.commit()
+            db.refresh(dummy)
+        return dummy
+
 def register_data_analysis_routes(app: FastAPI):
     
     @app.post("/upload-csv")
     async def upload_csv(
+        request: Request,
         file: UploadFile = File(...),
         session_id: str = Query(..., min_length=1, description="Session ID for tracking uploads"),
         db=Depends(get_db),
-        current_user=Depends(get_current_user)
+        current_user=Depends(get_optional_current_user)
     ):
         """Upload CSV file for data analysis"""
         print(f"Received upload request for session: {session_id}")
@@ -149,9 +162,10 @@ def register_data_analysis_routes(app: FastAPI):
 
     @app.post("/data-analysis")
     def data_analysis(
+        request: Request,
         data: DataAnalysisRequest,
         db=Depends(get_db),
-        current_user=Depends(get_current_user)
+        current_user=Depends(get_optional_current_user)
     ):
         """Process data analysis questions"""
         
@@ -289,9 +303,10 @@ Code:"""
 
     @app.get("/csv-info")
     def get_csv_info(
+        request: Request,
         session_id: str = Query(...),
         db=Depends(get_db),
-        current_user=Depends(get_current_user)
+        current_user=Depends(get_optional_current_user)
     ):
         """Get information about uploaded CSV for this session"""
         csv_record = db.query(UploadedCSV).filter(
