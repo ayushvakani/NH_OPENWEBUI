@@ -1,56 +1,30 @@
-/**
- * AnalyticsPanel – Full-Screen Dashboard
- *
- * Opens as a full-screen overlay with:
- *  - Top KPI stat cards (auto-loaded)
- *  - Multi-chart grid with ECharts (auto-loaded)
- *  - Custom prompt bar to add more charts
- */
-
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { X, BarChart2, RefreshCw, Plus, Upload, FileText, Database } from 'lucide-react';
-import { apiFetch, API_BASE_URL, getToken } from '@/lib/api';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, BarChart2, Plus, UploadCloud, Cpu, Zap } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────────────────
 interface ChartCard {
     id: string;
-    prompt: string;
-    message: string;
+    prompt?: string;
+    title: string;
     chart_config: Record<string, unknown>;
     loading?: boolean;
     error?: string;
-    analysisChart?: string;
-    analysisCode?: string;
-    analysisOutput?: string;
+    phase?: 1 | 2;  // 1 = fast model, 2 = complex model
+}
+
+interface KPI {
+    label: string;
+    value: string;
+    sub: string;
+    icon: string;
+    color: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Auto-loaded queries (run on dashboard open)
-// ────────────────────────────────────────────────────────────────────────────
-const AUTO_QUERIES = [
-    'Show month-over-month recovery growth for 2024',           // → line
-    'Show total recovery by district for 2024',                 // → horizontal bar
-    'Show risk band percentage share for 2024',                 // → pie
-    'Show unpaid challan count by month for 2024 as area chart',// → area
-    'Show total recovery by risk band for 2024 as donut',       // → donut
-    'Show total recovery by district for 2024 as funnel',       // → funnel
-    'Show repeat offender count for 2024 as radar chart',       // → radar
-    'Show driver count by district for 2024 as treemap',        // → treemap
-    'Show unpaid challan count by district for 2024 as heatmap',// → heatmap
-    'Show total recovery by month for 2024 as scatter',         // → scatter
-    'Show repeat offender count for 2024 as gauge',             // → gauge
-    'Show year-over-year recovery growth',                      // → line
-    'Show top 5 districts by total recovery as horizontal bar',
-    'Show recovery rate vs total cases as scatter plot',
-    'Show heatmap of unpaid challans by month and district',
-    'Show top 10 repeat offenders count as a bar chart',
-    'Show recovery trend by risk band over time as line chart',
-];
-
-// ────────────────────────────────────────────────────────────────────────────
-// ECharts renderer
+// ECharts renderer with world + India map support
 // ────────────────────────────────────────────────────────────────────────────
 function EChart({ option }: { option: Record<string, unknown> }) {
     const ref = useRef<HTMLDivElement>(null);
@@ -59,7 +33,13 @@ function EChart({ option }: { option: Record<string, unknown> }) {
     useEffect(() => {
         let dead = false;
         (async () => {
-            const w = window as unknown as { echarts?: { init: (el: HTMLElement, t?: string) => unknown; getInstanceByDom: (el: HTMLElement) => unknown; registerMap?: (name: string, geo: unknown) => void } };
+            const w = window as unknown as {
+                echarts?: {
+                    init: (el: HTMLElement, t?: string) => unknown;
+                    getInstanceByDom: (el: HTMLElement) => unknown;
+                    registerMap?: (name: string, geo: unknown) => void;
+                }
+            };
             if (!w.echarts) {
                 await new Promise<void>((res, rej) => {
                     const s = document.createElement('script');
@@ -68,26 +48,39 @@ function EChart({ option }: { option: Record<string, unknown> }) {
                     document.head.appendChild(s);
                 });
             }
-            // Load India GeoJSON for map charts
+
+            // Load GeoJSON for map charts
             const isMapChart = Array.isArray(option.series) &&
-                (option.series as Array<{ type?: string }>).some(s => s.type === 'map');
+                (option.series as Array<{ type?: string; map?: string }>).some(s => s.type === 'map');
+
             if (isMapChart && w.echarts?.registerMap) {
+                const mapType = (option.series as Array<{ type?: string; map?: string }>)
+                    .find(s => s.type === 'map')?.map || 'India';
                 try {
-                    const ww = window as unknown as { _indiaGeoLoaded?: boolean };
-                    if (!ww._indiaGeoLoaded) {
-                        const r = await fetch('https://raw.githubusercontent.com/Subhash9325/GeoJson-Data-of-Indian-States/master/Indian_States');
-                        if (r.ok) {
-                            const geo = await r.json() as { features: Array<{ properties: Record<string, string> }> };
-                            // ECharts needs properties.name — this GeoJSON uses NAME_1
-                            geo.features.forEach(f => {
-                                f.properties.name = f.properties.NAME_1 || f.properties.name || '';
-                            });
-                            w.echarts.registerMap?.('India', geo);
-                            ww._indiaGeoLoaded = true;
+                    const ww = window as unknown as { _geoLoaded?: Record<string, boolean> };
+                    if (!ww._geoLoaded) ww._geoLoaded = {};
+                    if (!ww._geoLoaded[mapType]) {
+                        if (mapType === 'India') {
+                            const r = await fetch('https://raw.githubusercontent.com/Subhash9325/GeoJson-Data-of-Indian-States/master/Indian_States');
+                            if (r.ok) {
+                                const geo = await r.json() as { features: Array<{ properties: Record<string, string> }> };
+                                geo.features.forEach(f => { f.properties.name = f.properties.NAME_1 || f.properties.name || ''; });
+                                w.echarts.registerMap?.('India', geo);
+                                ww._geoLoaded['India'] = true;
+                            }
+                        } else if (mapType === 'world' || mapType === 'World') {
+                            const r = await fetch('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json');
+                            if (r.ok) {
+                                const geo = await r.json();
+                                w.echarts.registerMap?.('world', geo);
+                                ww._geoLoaded['world'] = true;
+                                ww._geoLoaded['World'] = true;
+                            }
                         }
                     }
                 } catch { /* map optional */ }
             }
+
             if (dead || !ref.current) return;
             const ec = (window as unknown as { echarts: { init: (el: HTMLElement, t?: string) => unknown; getInstanceByDom: (el: HTMLElement) => unknown } }).echarts;
             const ex = ec.getInstanceByDom(ref.current);
@@ -108,43 +101,6 @@ function EChart({ option }: { option: Record<string, unknown> }) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Data Analysis Helpers
-// ────────────────────────────────────────────────────────────────────────────
-const uploadCSV = async (file: File, sessionId: string): Promise<any> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const token = getToken();
-    const headers: Record<string, string> = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    
-    const response = await fetch(`${API_BASE_URL}/upload-csv?session_id=${sessionId}`, {
-        method: 'POST', credentials: 'include', body: formData, headers
-    });
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    return response.json();
-};
-
-const dataAnalysisStream = async function* (prompt: string, sessionId: string) {
-    const response = await fetch(`${API_BASE_URL}/data-analysis`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', body: JSON.stringify({ prompt, session_id: sessionId, model: 'deepseek-coder-v2:latest' }),
-    });
-    if (!response.ok || !response.body) throw new Error(`HTTP error! status: ${response?.status}`);
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const lines = decoder.decode(value).split('\n').filter(line => line.trim());
-            for (const line of lines) {
-                try { yield JSON.parse(line); } catch (e) { continue; }
-            }
-        }
-    } finally { reader.releaseLock(); }
-};
-
-// ────────────────────────────────────────────────────────────────────────────
 // Main Component
 // ────────────────────────────────────────────────────────────────────────────
 interface AnalyticsPanelProps {
@@ -153,179 +109,189 @@ interface AnalyticsPanelProps {
 }
 
 export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
+    const [datasetId, setDatasetId] = useState<string | null>(null);
+    const [isUploading, setIsUploading] = useState(false);
+
     const [cards, setCards] = useState<ChartCard[]>([]);
+    const [kpis, setKpis] = useState<KPI[]>([]);
+
+    // Streaming state
+    const [isPhase1Loading, setIsPhase1Loading] = useState(false);
+    const [isPhase2Streaming, setIsPhase2Streaming] = useState(false);
+    const [streamProgress, setStreamProgress] = useState(0); // 0-7 charts
+
     const [customPrompt, setCustomPrompt] = useState('');
     const [addingCustom, setAddingCustom] = useState(false);
     const [showPromptBar, setShowPromptBar] = useState(false);
-    const [loaded, setLoaded] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
-    const fileInputRef = useRef<HTMLInputElement>(null);
-
-    const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-    const [uploading, setUploading] = useState(false);
-    const [sessionId] = useState(`analytics-${Date.now()}`);
-
-    // ── India map state ─────────────────────────────────────────────────────
-    const [indiaMap, setIndiaMap] = useState<{
-        chart_config: Record<string, unknown>;
-        message: string;
-        loading: boolean;
-        error?: string;
-    }>({ chart_config: {}, message: '', loading: false });
-
-    const fetchIndiaMap = useCallback(async (metric = 'unpaid_challan_count', year = 2024) => {
-        setIndiaMap(prev => ({ ...prev, loading: true, error: undefined }));
-        try {
-            const data = await apiFetch<{ chart_config: Record<string, unknown>; message: string }>(
-                `/analytics/india-map?metric=${metric}&year=${year}`);
-            setIndiaMap({ chart_config: data.chart_config, message: data.message, loading: false });
-        } catch (e: unknown) {
-            let msg = (e as Error).message || 'Failed';
-            try { msg = JSON.parse(msg).detail ?? msg; } catch { /**/ }
-            setIndiaMap(prev => ({ ...prev, loading: false, error: msg }));
-        }
-    }, []);
-
-    // ── fetch a single query and update or add card ──────────────────────────
-    const fetchQuery = useCallback(async (prompt: string, id: string) => {
-        setCards(prev => {
-            const existing = prev.find(c => c.id === id);
-            if (existing) return prev.map(c => c.id === id ? { ...c, loading: true, error: undefined } : c);
-            return [...prev, { id, prompt, message: '', chart_config: {}, loading: true }];
-        });
-
-        try {
-            const data = await apiFetch<{ chart_config: Record<string, unknown>; message: string }>('/analytics/prompt', {
-                method: 'POST',
-                body: JSON.stringify({ prompt }),
-            });
-            setCards(prev => prev.map(c => c.id === id
-                ? { ...c, loading: false, message: data.message, chart_config: data.chart_config }
-                : c));
-        } catch (e: unknown) {
-            let msg = (e as Error).message || 'Failed';
-            try { msg = JSON.parse(msg).detail ?? msg; } catch { /**/ }
-            setCards(prev => prev.map(c => c.id === id ? { ...c, loading: false, error: msg } : c));
-        }
-    }, []);
-
-    // ── auto-load all queries when dashboard opens ────────────────────────────
-    useEffect(() => {
-        if (!open || loaded) return;
-        setLoaded(true);
-        setCards([]);
-        fetchIndiaMap('unpaid_challan_count', 2024);   // India map first
-        AUTO_QUERIES.forEach((q, i) => fetchQuery(q, `auto_${i}`));
-    }, [open, loaded, fetchQuery, fetchIndiaMap]);
+    const esRef = useRef<EventSource | null>(null);
 
     // Reset when closed
     useEffect(() => {
-        if (!open) { setLoaded(false); setCards([]); setShowPromptBar(false); setCustomPrompt(''); }
+        if (!open) {
+            setDatasetId(null);
+            setCards([]);
+            setKpis([]);
+            setShowPromptBar(false);
+            setCustomPrompt('');
+            setIsPhase1Loading(false);
+            setIsPhase2Streaming(false);
+            setStreamProgress(0);
+            if (esRef.current) { esRef.current.close(); esRef.current = null; }
+        }
     }, [open]);
 
+    // Cleanup SSE on unmount
+    useEffect(() => () => { esRef.current?.close(); }, []);
+
+    // ── PHASE 1: Upload + Fast Charts ────────────────────────────────────────
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
-        setUploading(true);
-        try {
-            await uploadCSV(file, sessionId);
-            setUploadedFile(file);
-            setCards([]); // Clear the traffic dashboard
+        setIsUploading(true);
+        const formData = new FormData();
+        formData.append('file', file);
 
-            // Generate dynamic queries based on CSV
-            const info = await apiFetch<{ has_csv: boolean, columns: Array<{name: string, type: string}> }>(`/csv-info?session_id=${sessionId}`);
-            if (info.has_csv && info.columns) {
-                const cols = info.columns.map(c => `${c.name} (${c.type})`).join(', ');
-                const prompt = `I have a dataset with these columns: ${cols}. Generate 4 interesting data analysis questions that can be answered using python pandas and plotted with matplotlib. Return ONLY a valid JSON array of 4 strings. No markdown formatting, no explanation, just the raw JSON array starting with [.`;
-                
-                try {
-                    const response = await apiFetch<{ response: string }>('/ask', {
-                        method: 'POST',
-                        body: JSON.stringify({ prompt, model: 'deepseek-coder-v2:latest', session_id: sessionId })
-                    });
-                    
-                    let clean = response.response.trim();
-                    if (clean.startsWith('```')) {
-                        const lines = clean.split('\n');
-                        lines.shift();
-                        if (lines[lines.length - 1].startsWith('```')) lines.pop();
-                        clean = lines.join('\n');
+        try {
+            const res = await fetch('http://localhost:8000/api/analytics/upload', { method: 'POST', body: formData });
+            if (!res.ok) throw new Error('Upload failed');
+            const data = await res.json();
+            setDatasetId(data.dataset_id);
+            await fetchPhase1(data.dataset_id);
+        } catch (err) {
+            console.error(err);
+            alert('Failed to upload dataset.');
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
+    const fetchPhase1 = async (id: string) => {
+        setIsPhase1Loading(true);
+        setCards([]);
+        setKpis([]);
+        try {
+            const data = await apiFetch<{ charts: ChartCard[]; kpis: KPI[] }>('/analytics/auto-charts', {
+                method: 'POST',
+                body: JSON.stringify({ dataset_id: id }),
+            });
+            const phase1Cards = data.charts.map(c => ({ ...c, phase: 1 as const }));
+            setCards(phase1Cards);
+            setKpis(data.kpis);
+            // Kick off Phase 2 streaming after Phase 1 arrives
+            startPhase2Stream(id);
+        } catch (err) {
+            console.error('Phase 1 failed', err);
+        } finally {
+            setIsPhase1Loading(false);
+        }
+    };
+
+    // ── PHASE 2: Complex Charts via SSE ──────────────────────────────────────
+    const startPhase2Stream = async (id: string) => {
+        console.log("startPhase2Stream TRIGGERED for dataset:", id);
+        setIsPhase2Streaming(true);
+        setStreamProgress(0);
+
+        try {
+            console.log("Calling fetch to Phase 2 stream endpoint...");
+            const res = await fetch(`http://localhost:8000/api/analytics/auto-charts/stream?dataset_id=${id}`, {
+                method: 'GET',
+                headers: { 'Accept': 'text/event-stream' }
+            });
+
+            if (!res.ok || !res.body) {
+                console.error("Phase 2 stream failed to connect");
+                setIsPhase2Streaming(false);
+                return;
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const parts = buffer.split('\n\n');
+                buffer = parts.pop() || ''; // Keep the last incomplete part in the buffer
+
+                for (const part of parts) {
+                    if (part.startsWith('data: ')) {
+                        const jsonStr = part.substring(6).trim();
+                        if (!jsonStr) continue;
+
+                        try {
+                            const payload = JSON.parse(jsonStr);
+
+                            if (payload.done) {
+                                setIsPhase2Streaming(false);
+                                return;
+                            }
+                            if (payload.error) {
+                                console.error('Phase 2 stream error:', payload.error);
+                                setIsPhase2Streaming(false);
+                                return;
+                            }
+                            if (payload.kpi) {
+                                setKpis(prev => [...prev, payload.kpi]);
+                                continue;
+                            }
+                            if (payload.chart) {
+                                const newCard: ChartCard = { ...payload.chart, phase: 2 };
+                                setCards(prev => {
+                                    if (prev.find(c => c.id === newCard.id)) return prev;
+                                    return [...prev, newCard];
+                                });
+                                setStreamProgress(p => p + 1);
+                            }
+                        } catch (e) {
+                            console.error('Phase 2 JSON parse error:', e, jsonStr);
+                        }
                     }
-                    const queries = JSON.parse(clean);
-                    if (Array.isArray(queries)) {
-                        queries.forEach((q: string, i: number) => {
-                            runDataAnalysisQuery(q, `dynamic_${Date.now()}_${i}`);
-                        });
-                    }
-                } catch(err) {
-                    console.error("Failed to generate queries", err);
-                    runDataAnalysisQuery(`Show summary statistics for numerical columns`, `dynamic_${Date.now()}_1`);
-                    runDataAnalysisQuery(`Generate a correlation heatmap for numerical features`, `dynamic_${Date.now()}_2`);
                 }
             }
-        } catch (error) {
-            console.error("Upload error:", error);
-            alert('Failed to upload file: ' + (error instanceof Error ? error.message : String(error)));
+        } catch (e) {
+            console.error('Phase 2 stream failed:', e);
         } finally {
-            setUploading(false);
+            setIsPhase2Streaming(false);
         }
     };
 
-    const runDataAnalysisQuery = async (q: string, id: string) => {
-        setCards(prev => [...prev, { id, prompt: q, message: '', chart_config: {}, loading: true }]);
-        try {
-            let currentMessage = '';
-            let currentCode = '';
-            let currentChart = '';
-            let currentOutput = '';
-            
-            const stream = dataAnalysisStream(q, sessionId);
-            for await (const data of stream) {
-                if (data.type === 'message') currentMessage += data.content;
-                if (data.type === 'code') currentCode += data.content;
-                if (data.type === 'output') currentOutput += data.content;
-                if (data.type === 'chart') currentChart = data.content;
-                
-                setCards(prev => prev.map(c => c.id === id ? {
-                    ...c,
-                    message: currentMessage,
-                    analysisCode: currentCode,
-                    analysisOutput: currentOutput,
-                    analysisChart: currentChart
-                } : c));
-            }
-            
-            setCards(prev => prev.map(c => c.id === id ? { ...c, loading: false } : c));
-        } catch (e: unknown) {
-            const msg = (e as Error).message || 'Data Analysis Failed';
-            setCards(prev => prev.map(c => c.id === id ? { ...c, loading: false, error: msg } : c));
-        }
-    };
-
+    // ── Custom Prompt ────────────────────────────────────────────────────────
     const addCustom = async () => {
         const q = customPrompt.trim();
-        if (!q || addingCustom) return;
+        if (!q || addingCustom || !datasetId) return;
         setAddingCustom(true);
+
         const id = `custom_${Date.now()}`;
-        
+        setCards(prev => [{ id, prompt: q, title: `Query: ${q}`, chart_config: {}, loading: true }, ...prev]);
         setShowPromptBar(false);
         setCustomPrompt('');
-        
-        if (uploadedFile) {
-            await runDataAnalysisQuery(q, id);
-        } else {
-            await fetchQuery(q, id);
+
+        try {
+            const data = await apiFetch<{ chart: ChartCard }>('/analytics/prompt', {
+                method: 'POST',
+                body: JSON.stringify({ dataset_id: datasetId, prompt: q }),
+            });
+            setCards(prev => prev.map(c => c.id === id ? { ...data.chart, loading: false } : c));
+        } catch (e: unknown) {
+            let msg = (e as Error).message || 'Failed';
+            try { msg = JSON.parse(msg).detail ?? msg; } catch { /**/ }
+            setCards(prev => prev.map(c => c.id === id ? { ...c, loading: false, error: msg } : c));
         }
-        
         setAddingCustom(false);
     };
 
     const handleKey = (e: React.KeyboardEvent) => { if (e.key === 'Enter') addCustom(); };
 
-    const loadedCards = cards.filter(c => !c.loading && !c.error);
-    const loadingCount = cards.filter(c => c.loading).length;
-
     if (!open) return null;
+
+    const totalExpected = 10;
+    const totalLoaded = cards.filter(c => !c.loading).length;
+    const streamPct = isPhase2Streaming ? Math.round((streamProgress / 7) * 100) : 100;
 
     return (
         <div style={{
@@ -333,88 +299,77 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             background: '#070d1a',
             display: 'flex', flexDirection: 'column',
             fontFamily: 'Inter, system-ui, sans-serif',
-            color: '#e2e8f0',
-            overflow: 'hidden',
+            color: '#e2e8f0', overflow: 'hidden',
         }}>
             <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
-        @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
-        .chart-card { animation: fadeUp 0.35s ease both; }
-        .dash-scroll::-webkit-scrollbar { width: 5px; }
-        .dash-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 5px; }
-        .refresh-btn:hover { background: rgba(52,211,153,0.2) !important; }
-        .close-btn:hover { background: rgba(239,68,68,0.15) !important; }
-        .add-btn:hover { filter: brightness(1.15); }
-      `}</style>
+                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+                @keyframes spin { to { transform: rotate(360deg); } }
+                @keyframes fadeUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+                @keyframes popIn { from { opacity:0; transform:scale(0.93); } to { opacity:1; transform:scale(1); } }
+                @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+                @keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+                @keyframes streamGlow { 0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,0)} 50%{box-shadow:0 0 0 4px rgba(52,211,153,0.2)} }
+                .chart-card-p1 { animation: fadeUp 0.4s ease both; }
+                .chart-card-p2 { animation: popIn 0.5s cubic-bezier(0.34,1.56,0.64,1) both; }
+                .streaming-card { animation: streamGlow 2s ease infinite; }
+                .dash-scroll::-webkit-scrollbar { width: 5px; }
+                .dash-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 5px; }
+                .action-btn:hover { filter: brightness(1.2); transform: translateY(-1px); transition: all 0.15s; }
+                .close-btn:hover { background: rgba(239,68,68,0.2) !important; }
+            `}</style>
 
-            {/* ── TOP NAV BAR ─────────────────────────────────────────────────── */}
+            {/* ── TOP NAV BAR ─────────────────────────────────────────────── */}
             <div style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '0 28px', height: 60, flexShrink: 0,
-                background: 'rgba(10,16,35,0.95)',
+                padding: '0 28px', height: 62, flexShrink: 0,
+                background: 'rgba(7,13,26,0.98)',
                 borderBottom: '1px solid rgba(255,255,255,0.07)',
-                backdropFilter: 'blur(10px)',
+                backdropFilter: 'blur(12px)',
             }}>
                 {/* Left: brand */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <div style={{ width: 34, height: 34, borderRadius: 9, background: 'linear-gradient(135deg,#34d399,#22d3ee)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <BarChart2 size={17} color="#071019" />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#34d399,#22d3ee)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <BarChart2 size={18} color="#071019" />
                     </div>
                     <div>
                         <div style={{ fontWeight: 700, fontSize: 15, background: 'linear-gradient(90deg,#34d399,#22d3ee)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                            Recovery Analytics Dashboard
+                            AI Analytics Dashboard
                         </div>
-                        <div style={{ fontSize: 11, color: '#475569' }}>NaMo RRR Programme · Live PostgreSQL Data</div>
+                        <div style={{ fontSize: 11, color: '#475569' }}>Hybrid Dual-Model · 10 Charts</div>
                     </div>
                 </div>
 
-                {/* Center: status pills */}
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    {loadingCount > 0 && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: 'rgba(234,179,8,0.1)', border: '1px solid rgba(234,179,8,0.3)', borderRadius: 20, fontSize: 12, color: '#fbbf24' }}>
-                            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#fbbf24', animation: 'pulse 1s infinite' }} />
-                            Loading {loadingCount} chart{loadingCount > 1 ? 's' : ''}…
-                        </div>
-                    )}
-                    {loadingCount === 0 && loadedCards.length > 0 && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.25)', borderRadius: 20, fontSize: 12, color: '#34d399' }}>
-                            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#34d399' }} />
-                            {loadedCards.length} charts loaded
-                        </div>
-                    )}
-                </div>
+                {/* Center: streaming progress indicator */}
+                {datasetId && (isPhase1Loading || isPhase2Streaming) && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'rgba(15,23,42,0.8)', padding: '8px 16px', borderRadius: 20, border: '1px solid rgba(52,211,153,0.2)' }}>
+                        {isPhase1Loading ? (
+                            <>
+                                <Zap size={13} color="#f59e0b" />
+                                <span style={{ fontSize: 12, color: '#f59e0b', fontWeight: 500 }}>Fast model generating...</span>
+                                <div style={{ width: 16, height: 16, border: '2px solid rgba(245,158,11,0.2)', borderTop: '2px solid #f59e0b', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
+                            </>
+                        ) : (
+                            <>
+                                <Cpu size={13} color="#34d399" />
+                                <span style={{ fontSize: 12, color: '#34d399', fontWeight: 500 }}>
+                                    AI analysing... {streamProgress}/7 complex charts
+                                </span>
+                                <div style={{ width: 80, height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 4, overflow: 'hidden' }}>
+                                    <div style={{ height: '100%', width: `${streamPct}%`, background: 'linear-gradient(90deg,#34d399,#22d3ee)', borderRadius: 4, transition: 'width 0.4s ease' }} />
+                                </div>
+                            </>
+                        )}
+                    </div>
+                )}
 
                 {/* Right: actions */}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    {uploadedFile && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.25)', borderRadius: 20, fontSize: 12, color: '#22d3ee' }}>
-                            <FileText size={12} />
-                            {uploadedFile.name}
-                        </div>
+                    {datasetId && (
+                        <button className="action-btn" onClick={() => { setShowPromptBar(p => !p); setTimeout(() => inputRef.current?.focus(), 100); }}
+                            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'linear-gradient(135deg,#34d399,#22d3ee)', border: 'none', color: '#071019', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+                            <Plus size={15} /> Add Chart
+                        </button>
                     )}
-                    
-                    <input
-                        type="file"
-                        accept=".csv,.xlsx,.xls"
-                        ref={fileInputRef}
-                        style={{ display: 'none' }}
-                        onChange={handleFileUpload}
-                    />
-                    <button className="upload-btn" onClick={() => fileInputRef.current?.click()} disabled={uploading}
-                        style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.3)', color: '#22d3ee', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
-                        <Upload size={15} /> {uploading ? 'Uploading…' : 'Upload Data'}
-                    </button>
-
-                    <button className="add-btn" onClick={() => { setShowPromptBar(p => !p); setTimeout(() => inputRef.current?.focus(), 100); }}
-                        style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'linear-gradient(135deg,#34d399,#22d3ee)', border: 'none', color: '#071019', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
-                        <Plus size={15} /> Add Chart
-                    </button>
-                    <button className="refresh-btn" onClick={() => { setLoaded(false); setCards([]); setUploadedFile(null); }}
-                        style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 9, background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)', color: '#34d399', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>
-                        <RefreshCw size={14} /> Refresh
-                    </button>
                     <button className="close-btn" onClick={onClose}
                         style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 9, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>
                         <X size={14} /> Close
@@ -422,7 +377,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                 </div>
             </div>
 
-            {/* ── CUSTOM PROMPT BAR (collapsible) ─────────────────────────────── */}
+            {/* ── CUSTOM PROMPT BAR ──────────────────────────────────────── */}
             {showPromptBar && (
                 <div style={{ padding: '12px 28px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(15,23,42,0.7)', display: 'flex', gap: 10, alignItems: 'center', flexShrink: 0 }}>
                     <input
@@ -430,35 +385,57 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                         value={customPrompt}
                         onChange={e => setCustomPrompt(e.target.value)}
                         onKeyDown={handleKey}
-                        placeholder='Ask anything, e.g. "Show driver count by district for 2023"'
+                        placeholder='e.g. "Show Revenue trend by Month as a Line Chart"'
                         disabled={addingCustom}
                         style={{ flex: 1, padding: '9px 14px', background: 'rgba(30,41,59,0.9)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 9, color: '#e2e8f0', fontSize: 13, outline: 'none', fontFamily: 'inherit' }}
                     />
                     <button onClick={addCustom} disabled={!customPrompt.trim() || addingCustom}
                         style={{ padding: '9px 20px', borderRadius: 9, background: customPrompt.trim() && !addingCustom ? 'linear-gradient(135deg,#34d399,#22d3ee)' : '#1e293b', border: 'none', color: customPrompt.trim() && !addingCustom ? '#071019' : '#475569', fontWeight: 600, fontSize: 13, cursor: customPrompt.trim() ? 'pointer' : 'not-allowed', fontFamily: 'inherit' }}>
-                        {addingCustom ? 'Loading…' : 'Generate Chart'}
+                        {addingCustom ? 'Generating…' : 'Generate Chart'}
                     </button>
                 </div>
             )}
 
-            {/* ── DASHBOARD GRID ───────────────────────────────────────────────── */}
+            {/* ── MAIN CONTENT ───────────────────────────────────────────── */}
             <div className="dash-scroll" style={{ flex: 1, overflowY: 'auto', padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: 22 }}>
 
-                {/* KPI SUMMARY ROW – derived from loaded cards */}
-                {loadedCards.length > 0 && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-                        {[
-                            { label: 'States Covered', value: '15', sub: 'Indian states in data', icon: '🗺️', color: '#34d399' },
-                            { label: 'Data Source', value: 'PostgreSQL', sub: 'nmrrp database', icon: '🗄️', color: '#22d3ee' },
-                            { label: 'Year Coverage', value: '2023–2024', sub: 'multi-year analysis', icon: '📅', color: '#a78bfa' },
-                            { label: 'Insight Mode', value: 'NLP → SQL', sub: 'no raw SQL exposed', icon: '🔒', color: '#fb923c' },
-                        ].map((kpi, i) => (
-                            <div key={i} style={{ background: 'rgba(15,23,42,0.7)', border: `1px solid rgba(${kpi.color === '#34d399' ? '52,211,153' : kpi.color === '#22d3ee' ? '34,211,238' : kpi.color === '#a78bfa' ? '167,139,250' : '251,146,60'},0.2)`, borderRadius: 14, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14, animation: 'fadeUp 0.3s ease both', animationDelay: `${i * 60}ms` }}>
-                                <div style={{ width: 44, height: 44, borderRadius: 12, background: `rgba(${kpi.color === '#34d399' ? '52,211,153' : kpi.color === '#22d3ee' ? '34,211,238' : kpi.color === '#a78bfa' ? '167,139,250' : '251,146,60'},0.15)`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>
-                                    {kpi.icon}
-                                </div>
+                {/* UPLOAD SCREEN */}
+                {!datasetId && !isUploading && (
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', animation: 'fadeUp 0.4s ease' }}>
+                        <div style={{ padding: '50px 70px', background: 'rgba(15,23,42,0.6)', border: '1px dashed rgba(52,211,153,0.4)', borderRadius: 28, textAlign: 'center', maxWidth: 480 }}>
+                            <UploadCloud size={52} color="#34d399" style={{ marginBottom: 18 }} />
+                            <h2 style={{ fontSize: 24, margin: '0 0 8px', color: '#f8fafc' }}>Upload Dataset</h2>
+                            <p style={{ fontSize: 14, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
+                                Drop a CSV or Excel file. Our <span style={{ color: '#34d399', fontWeight: 600 }}>Hybrid AI Engine</span> will instantly generate 3 fast charts, then stream 7 complex ones as they're analyzed by a 7B coding model.
+                            </p>
+                            <div style={{ display: 'flex', justifyContent: 'center', gap: 20, margin: '20px 0', fontSize: 12, color: '#475569' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Zap size={12} color="#f59e0b" /> <span>Phase 1: qwen3.5:0.8b → 3 charts</span></div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Cpu size={12} color="#34d399" /> <span>Phase 2: qwen2.5-coder:7b → 7 charts</span></div>
+                            </div>
+                            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '11px 28px', background: 'linear-gradient(135deg,#34d399,#22d3ee)', color: '#071019', fontWeight: 700, borderRadius: 14, cursor: 'pointer', fontSize: 14 }}>
+                                Browse File
+                                <input type="file" accept=".csv,.xlsx,.xls" onChange={handleFileUpload} style={{ display: 'none' }} />
+                            </label>
+                        </div>
+                    </div>
+                )}
+
+                {/* Upload spinner */}
+                {isUploading && (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '40vh', gap: 16, animation: 'fadeUp 0.3s ease' }}>
+                        <div style={{ width: 48, height: 48, border: '3px solid rgba(52,211,153,0.15)', borderTop: '3px solid #34d399', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                        <p style={{ color: '#64748b', fontSize: 14 }}>Uploading dataset…</p>
+                    </div>
+                )}
+
+                {/* KPI SUMMARY ROW */}
+                {datasetId && kpis.length > 0 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 14 }}>
+                        {kpis.map((kpi, i) => (
+                            <div key={i} style={{ background: 'rgba(15,23,42,0.8)', border: '1px solid rgba(52,211,153,0.15)', borderRadius: 14, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, animation: 'fadeUp 0.3s ease both', animationDelay: `${i * 50}ms` }}>
+                                <div style={{ fontSize: 28, lineHeight: 1 }}>{kpi.icon}</div>
                                 <div>
-                                    <div style={{ fontSize: 22, fontWeight: 700, color: kpi.color, lineHeight: 1 }}>{kpi.value}</div>
+                                    <div style={{ fontSize: 22, fontWeight: 700, color: '#34d399', lineHeight: 1 }}>{kpi.value}</div>
                                     <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>{kpi.label}</div>
                                     <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>{kpi.sub}</div>
                                 </div>
@@ -467,158 +444,97 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                     </div>
                 )}
 
-                {/* ── INDIA STATE MAP ─────────────────────────────────────────── */}
-                <div className="chart-card" style={{
-                    background: 'rgba(15,23,42,0.85)',
-                    border: '1px solid rgba(52,211,153,0.2)',
-                    borderRadius: 16,
-                    overflow: 'hidden',
-                    display: 'flex', flexDirection: 'column',
-                    minHeight: 480,
-                }}>
-                    {/* Map header */}
-                    <div style={{ padding: '14px 20px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+                {/* Phase 1 loading */}
+                {datasetId && isPhase1Loading && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '20px 24px', background: 'rgba(245,158,11,0.05)', border: '1px solid rgba(245,158,11,0.15)', borderRadius: 14, animation: 'fadeUp 0.3s ease' }}>
+                        <div style={{ width: 24, height: 24, border: '2.5px solid rgba(245,158,11,0.2)', borderTop: '2.5px solid #f59e0b', borderRadius: '50%', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />
                         <div>
-                            <div style={{ fontSize: 13, color: '#34d399', fontWeight: 700 }}>🗺️ India State Fault Map</div>
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>
-                                {indiaMap.message || 'Fault intensity by state · 🟢 Low → 🔴 High'}
-                            </div>
-                        </div>
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            {/* Metric selector */}
-                            <select onChange={e => fetchIndiaMap(e.target.value, 2024)} defaultValue="unpaid_challan_count"
-                                style={{ padding: '4px 8px', borderRadius: 7, background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>
-                                <option value="unpaid_challan_count">Unpaid Challans</option>
-                                <option value="total_recovery_amount">Recovery Amount</option>
-                                <option value="repeat_offender_count">Repeat Offenders</option>
-                                <option value="driver_count">Driver Count</option>
-                            </select>
-                            {/* Year selector */}
-                            <select onChange={e => fetchIndiaMap('unpaid_challan_count', Number(e.target.value))} defaultValue="2024"
-                                style={{ padding: '4px 8px', borderRadius: 7, background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>
-                                <option value="2024">2024</option>
-                                <option value="2023">2023</option>
-                            </select>
-                            <button onClick={() => fetchIndiaMap('unpaid_challan_count', 2024)}
-                                style={{ background: 'none', border: 'none', color: '#334155', cursor: 'pointer', padding: 4 }}
-                                onMouseEnter={e => (e.currentTarget.style.color = '#34d399')}
-                                onMouseLeave={e => (e.currentTarget.style.color = '#334155')}>
-                                <RefreshCw size={13} />
-                            </button>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: '#f59e0b' }}>⚡ Fast Model Analyzing…</div>
+                            <div style={{ fontSize: 12, color: '#92400e', marginTop: 2 }}>qwen3.5:0.8b is generating your first 3 charts</div>
                         </div>
                     </div>
-                    {/* Map body */}
-                    <div style={{ flex: 1, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        {indiaMap.loading && (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-                                <div style={{ width: 36, height: 36, border: '2.5px solid rgba(52,211,153,0.2)', borderTop: '2.5px solid #34d399', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-                                <p style={{ margin: 0, fontSize: 12, color: '#475569' }}>Loading India map…</p>
-                            </div>
-                        )}
-                        {indiaMap.error && !indiaMap.loading && (
-                            <div style={{ textAlign: 'center', padding: 20 }}>
-                                <div style={{ fontSize: 32, marginBottom: 8 }}>⚠️</div>
-                                <p style={{ margin: 0, fontSize: 12, color: '#f87171' }}>{indiaMap.error}</p>
-                            </div>
-                        )}
-                        {!indiaMap.loading && !indiaMap.error && Object.keys(indiaMap.chart_config).length > 0 && (
-                            <div style={{ width: '100%', height: 430 }}>
-                                <EChart option={indiaMap.chart_config} />
-                            </div>
-                        )}
-                    </div>
-                </div>
-
+                )}
 
                 {/* CHARTS GRID */}
-                <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(2, 1fr)',
-                    gap: 18,
-                }}>
-                    {cards.map((card, i) => (
-                        <div key={card.id} className="chart-card" style={{
-                            background: 'rgba(15,23,42,0.8)',
-                            border: '1px solid rgba(255,255,255,0.07)',
-                            borderRadius: 16,
-                            overflow: 'hidden',
-                            animationDelay: `${Math.min(i * 80, 400)}ms`,
-                            display: 'flex', flexDirection: 'column',
-                            minHeight: 340,
-                        }}>
-                            {/* Card header */}
-                            <div style={{ padding: '14px 18px 10px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: 12, color: '#34d399', fontWeight: 600, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {card.message || card.prompt}
+                {datasetId && cards.length > 0 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 18 }}>
+                        {cards.map((card, i) => (
+                            <div key={card.id}
+                                className={`${card.phase === 2 ? 'chart-card-p2' : 'chart-card-p1'}${card.loading ? ' streaming-card' : ''}`}
+                                style={{
+                                    background: 'rgba(10,16,35,0.9)',
+                                    border: card.phase === 2
+                                        ? '1px solid rgba(99,102,241,0.25)'
+                                        : '1px solid rgba(52,211,153,0.15)',
+                                    borderRadius: 18,
+                                    overflow: 'hidden',
+                                    animationDelay: `${Math.min(i * 60, 300)}ms`,
+                                    display: 'flex', flexDirection: 'column',
+                                    minHeight: 340,
+                                    position: 'relative',
+                                }}>
+                                {/* Phase badge */}
+                                {card.phase && (
+                                    <div style={{
+                                        position: 'absolute', top: 10, right: 12,
+                                        display: 'flex', alignItems: 'center', gap: 4,
+                                        padding: '3px 8px', borderRadius: 20,
+                                        background: card.phase === 1 ? 'rgba(245,158,11,0.12)' : 'rgba(99,102,241,0.12)',
+                                        border: `1px solid ${card.phase === 1 ? 'rgba(245,158,11,0.2)' : 'rgba(99,102,241,0.2)'}`,
+                                        fontSize: 10, color: card.phase === 1 ? '#f59e0b' : '#818cf8', fontWeight: 600, zIndex: 1
+                                    }}>
+                                        {card.phase === 1 ? <Zap size={10} /> : <Cpu size={10} />}
+                                        {card.phase === 1 ? 'Fast' : 'AI+'}
                                     </div>
-                                    <div style={{ fontSize: 11, color: '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {card.message ? card.prompt : ''}
+                                )}
+
+                                {/* Card header */}
+                                <div style={{ padding: '14px 18px 10px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                                    <div style={{ fontSize: 13, color: card.phase === 2 ? '#818cf8' : '#34d399', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 60 }}>
+                                        {card.title}
                                     </div>
                                 </div>
-                                <button onClick={() => fetchQuery(card.prompt, card.id)}
-                                    style={{ background: 'none', border: 'none', color: '#334155', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', flexShrink: 0 }}
-                                    onMouseEnter={e => (e.currentTarget.style.color = '#34d399')}
-                                    onMouseLeave={e => (e.currentTarget.style.color = '#334155')}>
-                                    <RefreshCw size={13} />
-                                </button>
-                            </div>
 
                                 {/* Card body */}
-                                <div style={{ flex: 1, padding: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 280, overflowY: 'auto' }}>
+                                <div style={{ flex: 1, padding: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 280 }}>
                                     {card.loading && (
-                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-                                            <div style={{ width: 32, height: 32, border: '2.5px solid rgba(52,211,153,0.2)', borderTop: '2.5px solid #34d399', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-                                            <p style={{ margin: 0, fontSize: 12, color: '#475569' }}>{uploadedFile ? 'Analyzing data…' : 'Querying…'}</p>
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                                            <div style={{ width: 28, height: 28, border: '2.5px solid rgba(52,211,153,0.15)', borderTop: '2.5px solid #34d399', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                                            <p style={{ margin: 0, fontSize: 12, color: '#475569' }}>Querying LLM…</p>
                                         </div>
                                     )}
                                     {card.error && !card.loading && (
                                         <div style={{ textAlign: 'center', padding: 20 }}>
                                             <div style={{ fontSize: 28, marginBottom: 8 }}>⚠️</div>
                                             <p style={{ margin: 0, fontSize: 12, color: '#f87171' }}>{card.error}</p>
-                                            <button onClick={() => { if (!uploadedFile) fetchQuery(card.prompt, card.id); }}
-                                                style={{ marginTop: 10, padding: '5px 12px', borderRadius: 7, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit' }}>
-                                                Retry
-                                            </button>
                                         </div>
                                     )}
-                                    
-                                    {/* Data Analysis output from CSV upload */}
-                                    {!card.loading && !card.error && card.analysisChart && (
-                                        <div style={{ width: '100%', display: 'flex', justifyContent: 'center', marginBottom: card.analysisOutput ? 12 : 0 }}>
-                                            <img src={`data:image/png;base64,${card.analysisChart}`} alt="Generated chart" style={{ maxWidth: '100%', maxHeight: 280, borderRadius: 8 }} />
-                                        </div>
-                                    )}
-                                    {!card.loading && !card.error && card.analysisOutput && (
-                                        <div style={{ width: '100%', background: 'rgba(0,0,0,0.3)', padding: 12, borderRadius: 8, fontSize: 12, color: '#94a3b8', overflowX: 'auto' }}>
-                                            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>{card.analysisOutput}</pre>
-                                        </div>
-                                    )}
-                                    
-                                    {/* Standard EChart from dashboard query */}
-                                    {!card.loading && !card.error && !card.analysisChart && card.chart_config && Object.keys(card.chart_config).length > 0 && (
+                                    {!card.loading && !card.error && card.chart_config && Object.keys(card.chart_config).length > 0 && (
                                         <div style={{ width: '100%', height: 280 }}>
                                             <EChart option={card.chart_config} />
                                         </div>
                                     )}
                                 </div>
-                        </div>
-                    ))}
+                            </div>
+                        ))}
 
-                    {/* Empty state */}
-                    {cards.length === 0 && (
-                        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 0', gap: 16, opacity: 0.5 }}>
-                            <span style={{ fontSize: 64 }}>📊</span>
-                            <p style={{ margin: 0, color: '#475569', fontSize: 16 }}>Loading dashboard…</p>
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            {/* ── FOOTER ─────────────────────────────────────────────────────── */}
-            <div style={{ padding: '10px 28px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(7,13,26,0.9)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-                <span style={{ fontSize: 11, color: '#1e3a5f' }}>NMRRP Analytics · Secured by JWT + RBAC · All queries parameterized</span>
-                <span style={{ fontSize: 11, color: '#1e293b' }}>Powered by ECharts v5</span>
+                        {/* Skeleton placeholders while Phase 2 streams */}
+                        {isPhase2Streaming && Array.from({ length: Math.max(0, 7 - streamProgress) }).map((_, i) => (
+                            <div key={`skeleton_${i}`} style={{
+                                background: 'rgba(10,16,35,0.5)',
+                                border: '1px dashed rgba(99,102,241,0.15)',
+                                borderRadius: 18,
+                                minHeight: 340,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                flexDirection: 'column', gap: 12, animation: 'pulse 2s ease infinite',
+                                animationDelay: `${i * 200}ms`
+                            }}>
+                                <Cpu size={24} color="rgba(99,102,241,0.3)" />
+                                <p style={{ margin: 0, fontSize: 12, color: '#334155' }}>Complex AI chart incoming…</p>
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
         </div>
     );

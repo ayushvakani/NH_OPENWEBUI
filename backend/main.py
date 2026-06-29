@@ -636,6 +636,8 @@ class RegisterRequest(PydanticBaseModel):
 
 app = FastAPI()
 
+from routes.analytics import router as analytics_router
+app.include_router(analytics_router, prefix="/analytics", tags=["analytics"])
 # Add a set of allowed model names from ollama list
 ALLOWED_OLLAMA_MODELS = {
     'anindya/prem1b-sql-ollama-fp116:latest',
@@ -704,10 +706,10 @@ if len(API_KEYS) < 50:  # If you expect 50 keys but got fewer
     print(f"   Raw preview: {API_KEYS_STR[:200]}...")
 
 # Get allowed origins from environment variables
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,http://localhost:8080,http://127.0.0.1:8080")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173")
 ALLOWED_ORIGINS_LIST = [origin.strip() for origin in ALLOWED_ORIGINS.split(",")]
 # Always ensure dev origins are present
-for dev_origin in ["http://localhost:8080", "http://127.0.0.1:8080"]:
+for dev_origin in ["http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:5173", "http://127.0.0.1:5173"]:
     if dev_origin not in ALLOWED_ORIGINS_LIST:
         ALLOWED_ORIGINS_LIST.append(dev_origin)
 
@@ -3350,6 +3352,10 @@ async def get_sales_dashboard(current_user: dict = Depends(get_current_user)):
             "insights": "Workflow server is offline. Please start the workflow server on port 9000 to see live data.",
             "error": str(e)
         }
+
+# Mount Data Analytics router
+from routes.analytics import router as analytics_router
+app.include_router(analytics_router, prefix="/api/analytics")
 
 if __name__ == "__main__":
     import uvicorn
