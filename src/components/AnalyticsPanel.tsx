@@ -15,6 +15,12 @@ interface ChartCard {
     error?: string;
     phase?: 1 | 2;  // 1 = fast model, 2 = complex model
     insight?: string;
+    is_date?: boolean;
+    x_col?: string;
+    y_col?: string;
+    agg_type?: string;
+    ch_type?: string;
+    time_grain?: string;
 }
 
 interface KPI {
@@ -406,6 +412,42 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
 
     const handleKey = (e: React.KeyboardEvent) => { if (e.key === 'Enter') addCustom(); };
 
+    const handleTimeGrainChange = async (card: ChartCard, newGrain: string) => {
+        if (!datasetId) return;
+        setCards(prev => prev.map(c => c.id === card.id ? { ...c, loading: true } : c));
+        try {
+            const data = await apiFetch<{ chart: ChartCard }>('/api/analytics/reaggregate', {
+                method: 'POST',
+                body: JSON.stringify({
+                    dataset_id: datasetId,
+                    state_filter: selectedState,
+                    city_filter: selectedCity,
+                    x_col: card.x_col,
+                    y_col: card.y_col,
+                    ch_type: card.ch_type,
+                    agg_type: card.agg_type,
+                    time_grain: newGrain,
+                    title: card.title
+                })
+            });
+            
+            // Map the fresh chart but preserve the id and phase
+            setCards(prev => {
+                const newCards = prev.map(c => c.id === card.id ? { ...data.chart, phase: c.phase, id: c.id } : c);
+                // Also update cache using a timeout to ensure state is updated
+                setTimeout(() => {
+                    dashboardCache.current[cacheKey] = { cards: newCards, kpis };
+                    persistCache();
+                }, 0);
+                return newCards;
+            });
+            
+        } catch (err: any) {
+            console.error('Failed to reaggregate chart:', err);
+            setCards(prev => prev.map(c => c.id === card.id ? { ...c, loading: false, error: err.message || 'Failed to aggregate' } : c));
+        }
+    };
+
     if (!open) return null;
 
     const totalExpected = 10;
@@ -626,11 +668,22 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
 
                                 {/* Card header */}
                                 <div style={{ padding: '14px 18px 10px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                                    <div style={{ fontSize: 13, color: card.phase === 2 ? '#818cf8' : '#34d399', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 60 }}>
+                                    <div style={{ fontSize: 13, color: card.phase === 2 ? '#818cf8' : '#34d399', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: card.is_date ? 10 : 60, flex: 1 }}>
                                         {card.title}
                                     </div>
+                                    {!card.loading && card.is_date && (
+                                        <select
+                                            value={card.time_grain || 'date'}
+                                            onChange={(e) => handleTimeGrainChange(card, e.target.value)}
+                                            style={{ marginLeft: 10, marginRight: 10, background: 'rgba(255,255,255,0.05)', color: '#cbd5e1', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 11, padding: '2px 4px', cursor: 'pointer', outline: 'none' }}
+                                        >
+                                            <option value="year">Year</option>
+                                            <option value="month">Month</option>
+                                            <option value="date">Date</option>
+                                        </select>
+                                    )}
                                     {!card.loading && (
-                                        <button onClick={() => setExpandedChart(card)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center' }} title="Expand Chart">
+                                        <button onClick={() => setExpandedChart(card)} style={{ marginLeft: card.is_date ? '0' : 'auto', background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center' }} title="Expand Chart">
                                             <Maximize2 size={16} />
                                         </button>
                                     )}

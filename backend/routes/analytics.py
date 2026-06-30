@@ -39,7 +39,22 @@ def _base_style(config: dict, palette_idx: int) -> dict:
     for ax in ("xAxis", "yAxis"):
         if ax in config and isinstance(config[ax], dict):
             a = config[ax]
-            a["axisLabel"] = {**a.get("axisLabel", {}), "color": "#94a3b8", "fontSize": 11}
+            # Default style
+            axis_label = {**a.get("axisLabel", {}), "color": "#94a3b8", "fontSize": 11}
+            # Force show all labels for category axes if there are few items
+            if a.get("type") == "category" or "data" in a:
+                data_len = len(a.get("data", []))
+                if 0 < data_len <= 15:
+                    axis_label["interval"] = 0
+                else:
+                    axis_label["interval"] = "auto"
+                
+                if ax == "xAxis":
+                    axis_label["rotate"] = 25
+                    if data_len <= 15:
+                        axis_label["width"] = 80
+                        axis_label["overflow"] = "truncate"
+            a["axisLabel"] = axis_label
             a["splitLine"] = {"lineStyle": {"color": "rgba(255,255,255,0.05)", "type": "dashed"}}
             a["axisLine"]  = {"lineStyle": {"color": "rgba(255,255,255,0.08)"}}
             a["axisTick"]  = {"show": False}
@@ -76,9 +91,10 @@ def _base_style(config: dict, palette_idx: int) -> dict:
             s.setdefault("areaStyle",{}).update({"opacity":0.2,"color":p[0]["color"]})
     return config
 
-def make_chart(cid, title, config, phase_idx, insight=None):
+def make_chart(cid, title, config, phase_idx, insight=None, **kwargs):
     chart = {"id": cid, "title": title, "chart_config": _base_style(config, phase_idx)}
     if insight: chart["insight"] = insight
+    chart.update(kwargs)
     return chart
 
 # ─── Schema / KPI helpers ─────────────────────────────────────────────────────
@@ -120,6 +136,17 @@ def build_kpis(cache, df):
     return kpis
 
 # ─── Upload ───────────────────────────────────────────────────────────────────
+def load_df(cache: dict) -> pd.DataFrame:
+    df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
+    datetime_cols = [c["name"] for c in cache.get("columns", []) if c.get("dtype") == "datetime"]
+    for c in datetime_cols:
+        if c in df.columns:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                df[c] = pd.to_datetime(df[c], errors='coerce', dayfirst=True)
+    return df
+
 @router.post("/upload")
 async def upload_dataset(file: UploadFile = File(...)):
     if not file.filename.endswith((".csv",".xlsx",".xls")):
@@ -135,8 +162,24 @@ async def upload_dataset(file: UploadFile = File(...)):
     cols = []
     for col in df.columns:
         dtype = str(df[col].dtype)
+        is_dt = False
+        if "datetime" in dtype:
+            is_dt = True
+        elif "object" in dtype or "str" in dtype:
+            s = df[col].dropna()
+            if not s.empty and not s.astype(str).str.isnumeric().all():
+                try:
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        parsed = pd.to_datetime(s.head(10), errors='coerce', dayfirst=True)
+                        if parsed.notna().all():
+                            is_dt = True
+                except:
+                    pass
+                    
         if "int" in dtype or "float" in dtype: mt="numeric"
-        elif "datetime" in dtype: mt="datetime"
+        elif is_dt: mt="datetime"
         elif df[col].nunique()<50 and df[col].dtype=="object": mt="categorical"
         else: mt="text"
         # Promote high-unique object cols that look geographic to text so we still show them
@@ -189,7 +232,7 @@ def generate_insight(x_data, y_data, x_col, y_col, agg_type="sum"):
 def check_geo(did: str) -> dict:
     if not did or did not in dataset_cache: return {"geo_type":"none","geo_column":None,"present_values":[]}
     cache = dataset_cache[did]
-    df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
+    df = load_df(cache)
     for col in cache["columns"]:
         if col["dtype"] in ("text","categorical"):
             uniq = df[col["name"]].dropna().unique().tolist()
@@ -240,7 +283,7 @@ async def auto_charts(payload: Dict[str,Any]):
     did = payload.get("dataset_id")
     if not did or did not in dataset_cache: raise HTTPException(404,"Dataset not found")
     cache = dataset_cache[did]
-    df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
+    df = load_df(cache)
     
     state_filter = payload.get("state_filter")
     city_filter = payload.get("city_filter")
@@ -291,7 +334,7 @@ async def auto_charts(payload: Dict[str,Any]):
                 "xAxis":{"type":"category","data":ts[dt].tolist(),"boundaryGap":False},
                 "yAxis":{"type":"value"},
                 "series":[{"type":"line","data":[round(v,2) for v in ts[num1].tolist()]}]
-            }, 2, insight=insight_text))
+            }, 2, insight=insight_text, is_date=True, x_col=dt, y_col=num1, ch_type="line", agg_type="sum", time_grain="month"))
         except Exception: pass
     elif cat1 and num1 and num2:
         agg = df.groupby(cat1)[[num1,num2]].sum().nlargest(8,num1).reset_index()
@@ -392,8 +435,7 @@ async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None
         cache["phase2_done"] = False
         
         try:
-            df = (pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv")
-                  else pd.read_excel(cache["file_path"]))
+            df = load_df(cache)
                   
             df = apply_filters(df, dataset_id, state_filter, city_filter)
 
@@ -555,6 +597,9 @@ async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None
                                             "chart_config": chart_config,
                                             "insight": insight_text
                                         }
+                                        is_date = any(c["name"] == x_col and c["dtype"] == "datetime" for c in cache["columns"])
+                                        if is_date:
+                                            ch.update({"is_date": True, "x_col": x_col, "y_col": y_col, "ch_type": ch_type, "agg_type": agg_type, "time_grain": "date"})
                                         styled = _base_style(ch.get("chart_config", {}), (recipe_index + 3) % len(PALETTES))
                                         ch["chart_config"] = styled
                                         payload_dict = {"chart": ch, "index": recipe_index + 3}
@@ -593,7 +638,7 @@ async def state_detail(payload: Dict[str,Any]):
     if not did or did not in dataset_cache: raise HTTPException(404,"Dataset not found")
     if not state or not geo_col: raise HTTPException(400,"Missing params")
     cache = dataset_cache[did]
-    df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
+    df = load_df(cache)
     sdf = df[df[geo_col].astype(str).str.contains(state, case=False, na=False)]
     cat1 = best_cat(cache, exclude=geo_col); num1 = best_num(cache)
     charts, kpis = [], []
@@ -619,7 +664,7 @@ async def handle_prompt(payload: Dict[str,Any]):
     city_filter = payload.get("city_filter")
     if not did or did not in dataset_cache: raise HTTPException(404,"Dataset not found")
     cache = dataset_cache[did]
-    df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
+    df = load_df(cache)
     df = apply_filters(df, did, state_filter, city_filter)
     stext = schema_text(cache, df)
     
@@ -704,3 +749,83 @@ JSON ONLY:"""
         return {"chart":{"id":f"c_{uuid.uuid4().hex[:6]}","title":f"Query: {prompt_text}",
             "chart_config":_base_style({"xAxis":{"type":"category","data":["A","B","C"]},
                 "yAxis":{"type":"value"},"series":[{"type":"bar","data":[10,20,15]}]},0)}}
+
+# ─── Reaggregate ─────────────────────────────────────────────────────────────
+@router.post("/reaggregate")
+async def reaggregate_chart(payload: Dict[str,Any]):
+    dataset_id = payload.get("dataset_id")
+    x_col = payload.get("x_col")
+    y_col = payload.get("y_col")
+    ch_type = payload.get("ch_type", "bar")
+    agg_type = payload.get("agg_type", "sum")
+    time_grain = payload.get("time_grain", "date")
+    state_filter = payload.get("state_filter")
+    city_filter = payload.get("city_filter")
+    title = payload.get("title", f"{y_col} by {x_col}")
+    
+    if not dataset_id or dataset_id not in dataset_cache:
+        raise HTTPException(404, "Dataset not found")
+        
+    cache = dataset_cache[dataset_id]
+    df = load_df(cache)
+    df = apply_filters(df, dataset_id, state_filter, city_filter)
+    
+    df_clean = df.dropna(subset=[x_col, y_col]).copy()
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        df_clean[x_col] = pd.to_datetime(df_clean[x_col], errors='coerce', dayfirst=True)
+    
+    if time_grain == "year":
+        df_clean[x_col] = df_clean[x_col].dt.year.astype(str)
+    elif time_grain == "month":
+        df_clean[x_col] = df_clean[x_col].dt.to_period("M").astype(str)
+    else:
+        df_clean[x_col] = df_clean[x_col].dt.date.astype(str)
+        
+    if agg_type in ["avg", "mean"]:
+        agg = df_clean.groupby(x_col)[y_col].mean().reset_index()
+    elif agg_type == "count":
+        agg = df_clean.groupby(x_col)[y_col].count().reset_index()
+    else:
+        agg = df_clean.groupby(x_col)[y_col].sum().reset_index()
+        
+    x_data = agg[x_col].astype(str).tolist()
+    y_data = [round(float(v), 2) for v in agg[y_col].tolist()]
+    
+    if ch_type == "pie":
+        chart_config = {
+            "series": [{"type": "pie", "data": [{"name": str(x), "value": y} for x, y in zip(x_data, y_data)]}]
+        }
+    elif ch_type == "area":
+        chart_config = {
+            "xAxis": {"type": "category", "data": x_data},
+            "yAxis": {"type": "value"},
+            "series": [{"type": "line", "areaStyle": {}, "data": y_data}]
+        }
+    elif ch_type == "funnel":
+        chart_config = {
+            "series": [{"type": "funnel", "data": [{"name": str(x), "value": y} for x, y in zip(x_data, y_data)], "label": {"position": "inside", "color": "#0f172a", "fontWeight": "bold"}}]
+        }
+    else:
+        chart_config = {
+            "xAxis": {"type": "category", "data": x_data},
+            "yAxis": {"type": "value"},
+            "series": [{"type": ch_type, "data": y_data}]
+        }
+        
+    insight_text = generate_insight(x_data, y_data, x_col, y_col, agg_type)
+    
+    ch = {
+        "id": f"c_{uuid.uuid4().hex[:6]}",
+        "title": title,
+        "chart_config": _base_style(chart_config, 0),
+        "insight": insight_text,
+        "is_date": True,
+        "x_col": x_col,
+        "y_col": y_col,
+        "ch_type": ch_type,
+        "agg_type": agg_type,
+        "time_grain": time_grain
+    }
+    return {"chart": ch}
