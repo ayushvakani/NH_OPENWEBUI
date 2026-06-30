@@ -1,6 +1,7 @@
 from fastapi import APIRouter, File, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
-from typing import Dict, Any
+from fastapi.encoders import jsonable_encoder
+from typing import Dict, Any, Optional
 import pandas as pd
 import numpy as np
 import uuid, os, shutil, json, asyncio, re, time, requests as req_lib
@@ -84,20 +85,22 @@ def make_chart(cid, title, config, phase_idx, insight=None):
 def schema_text(cache, df):
     lines = []
     for c in cache["columns"]:
+        if df[c["name"]].nunique() <= 1: continue # Skip useless single-value columns
         uniq = df[c["name"]].dropna().unique()
         samp = [str(v) for v in uniq[:6]]
-        lines.append(f"- '{c['name']}' | type:{c['dtype']} | unique:{c['unique_count']} | samples:{samp}")
+        lines.append(f"- '{c['name']}' | type:{c['dtype']} | unique:{len(uniq)} | samples:{samp}")
     return "\n".join(lines)
 
-def best_cat(cache, exclude=None):
-    """Pick the most useful categorical column (highest unique count > 1, not excluded)."""
+def best_cat(cache, df, exclude=None):
+    """Pick the most useful categorical column (highest unique count > 1 in current df, not excluded)."""
     cats = [c for c in cache["columns"]
-            if c["dtype"] in ("categorical","text") and c["unique_count"] > 1
+            if c["dtype"] in ("categorical","text") 
+            and df[c["name"]].nunique() > 1
             and (exclude is None or c["name"] != exclude)]
     if not cats: return None
-    return max(cats, key=lambda c: c["unique_count"])["name"]
+    return max(cats, key=lambda c: df[c["name"]].nunique())["name"]
 
-def best_num(cache, exclude=None):
+def best_num(cache, df, exclude=None):
     nums = [c for c in cache["columns"]
             if c["dtype"] == "numeric"
             and (exclude is None or c["name"] != exclude)]
@@ -183,10 +186,8 @@ def generate_insight(x_data, y_data, x_col, y_col, agg_type="sum"):
         insight += f". Lowest is {lowest[0]} ({lowest[1]:,.2f})."
     return insight
 
-@router.post("/detect-geo")
-async def detect_geo(payload: Dict[str,Any]):
-    did = payload.get("dataset_id")
-    if not did or did not in dataset_cache: raise HTTPException(404,"Dataset not found")
+def check_geo(did: str) -> dict:
+    if not did or did not in dataset_cache: return {"geo_type":"none","geo_column":None,"present_values":[]}
     cache = dataset_cache[did]
     df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
     for col in cache["columns"]:
@@ -201,6 +202,12 @@ async def detect_geo(payload: Dict[str,Any]):
                 return {"geo_type":"state","geo_column":col["name"],"present_values":list(set(matched))}
     return {"geo_type":"none","geo_column":None,"present_values":[]}
 
+@router.post("/detect-geo")
+async def detect_geo(payload: Dict[str,Any]):
+    did = payload.get("dataset_id")
+    if not did or did not in dataset_cache: raise HTTPException(404,"Dataset not found")
+    return check_geo(did)
+
 # ─── PHASE 1: Instant Python charts ──────────────────────────────────────────
 @router.post("/auto-charts")
 async def auto_charts(payload: Dict[str,Any]):
@@ -209,13 +216,21 @@ async def auto_charts(payload: Dict[str,Any]):
     if not did or did not in dataset_cache: raise HTTPException(404,"Dataset not found")
     cache = dataset_cache[did]
     df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
-
+    
+    state_filter = payload.get("state_filter")
+    if state_filter:
+        geo_info = check_geo(did)
+        if geo_info.get("geo_type") == "state" and geo_info.get("geo_column"):
+            col = geo_info["geo_column"]
+            df = df[df[col].astype(str).str.contains(state_filter, case=False, na=False)]
+            # If filtering left us with no data, we could return early, but let it proceed and return empty charts
+            
     kpis   = build_kpis(cache, df)
     charts = []
-    cat1   = best_cat(cache)
-    cat2   = best_cat(cache, exclude=cat1)
-    num1   = best_num(cache)
-    num2   = best_num(cache, exclude=num1)
+    cat1   = best_cat(cache, df)
+    cat2   = best_cat(cache, df, exclude=cat1)
+    num1   = best_num(cache, df)
+    num2   = best_num(cache, df, exclude=num1)
     datetime_cols = [c["name"] for c in cache["columns"] if c["dtype"]=="datetime"]
 
     # ── Chart 1: Horizontal Bar — top N category by numeric ──────────────────
@@ -299,7 +314,7 @@ RULES:
    {{"title": "Descriptive Title", "type": "funnel", "x_column": "Exact_Column_Name", "y_column": "Exact_Column_Name", "aggregation": "sum"}}
 3. Your JSON array MUST contain EXACTLY 10 objects.
 4. Each object MUST use a DIFFERENT "type" from this exact list: ["map", "gauge", "area", "line", "pie", "horizontalBar", "kpi", "scatter", "histogram", "funnel"]. You must use ALL 10 types exactly once.
-5. For "map", include an extra key "map_region" (either "world" or "India"). The x_column for "map" MUST be a State/Province/Region column to color individual states (DO NOT use Country column).
+5. For "map", include an extra key "map_region" (either "world" or "India"). The x_column for "map" MUST strictly be a State/Province column (DO NOT use Country, Region, or City columns) to properly color individual states on a national map.
 6. Valid "aggregation" values: sum, avg, count
 7. Use REAL column names from the schema. Check spelling carefully.
 
@@ -336,7 +351,7 @@ def parse_llm_output(raw: str) -> list:
         return []
 
 @router.get("/auto-charts/stream")
-async def auto_charts_stream(dataset_id: str):
+async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None):
     """Phase 2: LLM generates 10 complex charts, trickled one-by-one via SSE."""
     if not dataset_id or dataset_id not in dataset_cache:
         raise HTTPException(404, "Dataset not found")
@@ -345,10 +360,11 @@ async def auto_charts_stream(dataset_id: str):
     async def generate():
         print(f"[Phase-2] Stream generator started for dataset {dataset_id}", flush=True)
         
-        if "phase2_charts" in cache and cache.get("phase2_done"):
+        # Don't serve from cache if there's a state_filter active, as we need fresh charts
+        if not state_filter and "phase2_charts" in cache and cache.get("phase2_done"):
             print("[Phase-2] Serving from cache!", flush=True)
             for item in cache["phase2_charts"]:
-                yield f"data: {json.dumps(item)}\n\n"
+                yield f"data: {json.dumps(jsonable_encoder(item))}\n\n"
             yield 'data: {"done":true}\n\n'
             return
             
@@ -358,8 +374,24 @@ async def auto_charts_stream(dataset_id: str):
         try:
             df = (pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv")
                   else pd.read_excel(cache["file_path"]))
+                  
+            if state_filter:
+                geo_info = check_geo(dataset_id)
+                if geo_info.get("geo_type") == "state" and geo_info.get("geo_column"):
+                    col = geo_info["geo_column"]
+                    df = df[df[col].astype(str).str.contains(state_filter, case=False, na=False)]
+
             stext = schema_text(cache, df)
-            prompt = RECIPE_PROMPT.format(schema=stext)
+            
+            # Dynamically adjust the map rule based on if we are drilling down into a state
+            if state_filter:
+                modified_prompt = RECIPE_PROMPT.replace(
+                    "The x_column for \"map\" MUST strictly be a State/Province column (DO NOT use Country, Region, or City columns) to properly color individual states on a national map.",
+                    f"Since we are filtered to {state_filter}:\n- For the 'map' chart ONLY, the x_column MUST be a 'City' or 'District' column so ECharts can match exact map geometry (e.g., 'Pune', 'Surat'). DO NOT use 'Region' for the map.\n- For ALL OTHER 9 charts, you MUST strictly use the 'Region' column as the x_column to break down the data by region!"
+                )
+                prompt = modified_prompt.format(schema=stext)
+            else:
+                prompt = RECIPE_PROMPT.format(schema=stext)
 
             # ── Call Ollama with true async streaming ──
             from config import OLLAMA_BASE_URL
@@ -418,7 +450,7 @@ async def auto_charts_stream(dataset_id: str):
                                         x_data = agg[x_col].astype(str).tolist()
                                         if ch_type != "map":
                                             x_data = format_labels(x_data)
-                                        y_data = [round(v, 2) for v in agg[y_col].tolist()]
+                                        y_data = [round(float(v), 2) for v in agg[y_col].tolist()]
                                         
                                         if ch_type == "kpi":
                                             val = agg[y_col].sum() if agg_type == "sum" else (agg[y_col].mean() if agg_type in ["avg","mean"] else agg[y_col].count())
@@ -429,10 +461,18 @@ async def auto_charts_stream(dataset_id: str):
                                             continue
 
                                         if ch_type == "map":
-                                            map_region = recipe.get("map_region", "world")
+                                            if state_filter:
+                                                map_region = state_filter
+                                                # Strip common suffixes so ECharts can match exact names (e.g. "Mumbai Region" -> "Mumbai")
+                                                clean_x_data = [re.sub(r'(?i)\s+(Region|District|City|Town)$', '', str(x)).strip() for x in x_data]
+                                            else:
+                                                map_region = str(recipe.get("map_region", "world")).strip()
+                                                if map_region.lower() not in ["india", "world"]:
+                                                    map_region = "India"
+                                                clean_x_data = x_data
                                             chart_config = {
                                                 "visualMap": {"left": "right", "min": min(y_data) if y_data else 0, "max": max(y_data) if y_data else 100, "text": ["High", "Low"], "calculable": True},
-                                                "series": [{"type": "map", "map": map_region, "data": [{"name": str(x), "value": y} for x, y in zip(x_data, y_data)]}]
+                                                "series": [{"type": "map", "map": map_region, "data": [{"name": str(x), "value": y} for x, y in zip(clean_x_data, y_data)]}]
                                             }
                                         elif ch_type == "pie":
                                             chart_config = {
@@ -497,7 +537,7 @@ async def auto_charts_stream(dataset_id: str):
                                         ch["chart_config"] = styled
                                         payload_dict = {"chart": ch, "index": recipe_index + 3}
                                         cache["phase2_charts"].append(payload_dict)
-                                        payload = json.dumps(payload_dict)
+                                        payload = json.dumps(jsonable_encoder(payload_dict))
                                         yield f"data: {payload}\n\n"
                                         
                                     except Exception as e:
@@ -583,6 +623,8 @@ JSON ONLY:"""
         s,e = text.find("{"), text.rfind("}")
         if s!=-1 and e!=-1: text = text[s:e+1]
         ch = json.loads(text)
+        if not isinstance(ch.get("chart_config"), dict) or "series" not in ch.get("chart_config", {}):
+            raise ValueError("Invalid chart_config generated")
         _base_style(ch["chart_config"], 2)
         return {"chart": ch}
     except Exception as ex:

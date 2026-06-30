@@ -27,7 +27,7 @@ interface KPI {
 // ────────────────────────────────────────────────────────────────────────────
 // ECharts renderer with world + India map support
 // ────────────────────────────────────────────────────────────────────────────
-function EChart({ option }: { option: Record<string, unknown> }) {
+function EChart({ option, onChartClick }: { option: Record<string, unknown>, onChartClick?: (params: any) => void }) {
     const ref = useRef<HTMLDivElement>(null);
     const inst = useRef<unknown>(null);
 
@@ -77,6 +77,31 @@ function EChart({ option }: { option: Record<string, unknown> }) {
                                 ww._geoLoaded['world'] = true;
                                 ww._geoLoaded['World'] = true;
                             }
+                        } else {
+                            const wwGlobal = window as unknown as { _masterDistrictGeo?: any };
+                            let geo = wwGlobal._masterDistrictGeo;
+                            
+                            if (!geo) {
+                                const r = await fetch('https://raw.githubusercontent.com/geohacker/india/master/district/india_district.geojson');
+                                if (r.ok) {
+                                    geo = await r.json();
+                                    wwGlobal._masterDistrictGeo = geo; // Cache it permanently in memory for the session
+                                }
+                            }
+
+                            if (geo && geo.features) {
+                                const filteredFeatures = geo.features.filter((f: any) => f.properties.NAME_1 === mapType);
+                                if (filteredFeatures.length > 0) {
+                                    // Deep clone so we don't mutate the cached master object when we set .name
+                                    const stateGeo = {
+                                        ...geo,
+                                        features: JSON.parse(JSON.stringify(filteredFeatures))
+                                    };
+                                    stateGeo.features.forEach((f: any) => { f.properties.name = f.properties.NAME_2 || ''; });
+                                    w.echarts.registerMap?.(mapType, stateGeo);
+                                    ww._geoLoaded[mapType] = true;
+                                }
+                            }
                         }
                     }
                 } catch { /* map optional */ }
@@ -88,6 +113,9 @@ function EChart({ option }: { option: Record<string, unknown> }) {
             if (ex) (ex as { dispose: () => void }).dispose();
             inst.current = ec.init(ref.current, 'dark');
             (inst.current as { setOption: (o: unknown) => void }).setOption({ backgroundColor: 'transparent', ...option });
+            if (onChartClick) {
+                (inst.current as { on: (e: string, cb: (p: any) => void) => void }).on('click', onChartClick);
+            }
         })();
         return () => { dead = true; if (inst.current) { (inst.current as { dispose: () => void }).dispose(); inst.current = null; } };
     }, [JSON.stringify(option)]); // eslint-disable-line
@@ -111,6 +139,7 @@ interface AnalyticsPanelProps {
 
 export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
     const [datasetId, setDatasetId] = useState<string | null>(null);
+    const [selectedState, setSelectedState] = useState<string | null>(null);
     const [isUploading, setIsUploading] = useState(false);
 
     const [cards, setCards] = useState<ChartCard[]>([]);
@@ -126,7 +155,10 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
     const [addingCustom, setAddingCustom] = useState(false);
     const [showPromptBar, setShowPromptBar] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
-    const esRef = useRef<EventSource | null>(null);
+    const abortControllerRef = useRef<AbortController | null>(null);
+    
+    // Cache for dashboard states (national + individual states)
+    const dashboardCache = useRef<Record<string, { kpis: KPI[], cards: ChartCard[] }>>({});
 
     // Initialization and Local Storage Persistence
     useEffect(() => {
@@ -142,8 +174,8 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
         }
     }, [open]);
 
-    // Cleanup SSE on unmount
-    useEffect(() => () => { esRef.current?.close(); }, []);
+    // Cleanup fetch on unmount
+    useEffect(() => () => { abortControllerRef.current?.abort(); }, []);
 
     // ── PHASE 1: Upload + Fast Charts ────────────────────────────────────────
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -158,6 +190,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             if (!res.ok) throw new Error('Upload failed');
             const data = await res.json();
             setDatasetId(data.dataset_id);
+            setSelectedState(null);
             localStorage.setItem('nemhemai_dataset_id', data.dataset_id);
             await fetchPhase1(data.dataset_id);
         } catch (err) {
@@ -168,20 +201,33 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
         }
     };
 
-    const fetchPhase1 = async (id: string) => {
+    const fetchPhase1 = async (id: string, state_filter?: string | null) => {
+        const cacheKey = `${id}_${state_filter || 'national'}`;
+        if (dashboardCache.current[cacheKey]) {
+            setCards(dashboardCache.current[cacheKey].cards);
+            setKpis(dashboardCache.current[cacheKey].kpis);
+            return; // Cache hit, skip everything
+        }
+
         setIsPhase1Loading(true);
         setCards([]);
         setKpis([]);
         try {
+            const payload: any = { dataset_id: id };
+            if (state_filter) payload.state_filter = state_filter;
+            
             const data = await apiFetch<{ charts: ChartCard[]; kpis: KPI[] }>('/analytics/auto-charts', {
                 method: 'POST',
-                body: JSON.stringify({ dataset_id: id }),
+                body: JSON.stringify(payload),
             });
             const phase1Cards = data.charts.map(c => ({ ...c, phase: 1 as const }));
             setCards(phase1Cards);
             setKpis(data.kpis);
+            
+            dashboardCache.current[cacheKey] = { cards: phase1Cards, kpis: data.kpis };
+
             // Kick off Phase 2 streaming after Phase 1 arrives
-            startPhase2Stream(id);
+            startPhase2Stream(id, state_filter);
         } catch (err) {
             console.error('Phase 1 failed', err);
             throw err;
@@ -191,16 +237,26 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
     };
 
     // ── PHASE 2: Complex Charts via SSE ──────────────────────────────────────
-    const startPhase2Stream = async (id: string) => {
+    const startPhase2Stream = async (id: string, state_filter?: string | null) => {
         console.log("startPhase2Stream TRIGGERED for dataset:", id);
         setIsPhase2Streaming(true);
         setStreamProgress(0);
 
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        const ac = new AbortController();
+        abortControllerRef.current = ac;
+
         try {
             console.log("Calling fetch to Phase 2 stream endpoint...");
-            const res = await fetch(`http://localhost:8000/api/analytics/auto-charts/stream?dataset_id=${id}`, {
+            let url = `http://localhost:8000/api/analytics/auto-charts/stream?dataset_id=${id}`;
+            if (state_filter) url += `&state_filter=${encodeURIComponent(state_filter)}`;
+            
+            const res = await fetch(url, {
                 method: 'GET',
-                headers: { 'Accept': 'text/event-stream' }
+                headers: { 'Accept': 'text/event-stream' },
+                signal: ac.signal
             });
 
             if (!res.ok || !res.body) {
@@ -215,7 +271,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
 
             while (true) {
                 const { value, done } = await reader.read();
-                if (done) break;
+                if (done || ac.signal.aborted) break;
 
                 buffer += decoder.decode(value, { stream: true });
                 const parts = buffer.split('\n\n');
@@ -239,14 +295,24 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                 return;
                             }
                             if (payload.kpi) {
-                                setKpis(prev => [...prev, payload.kpi]);
+                                setKpis(prev => {
+                                    const next = [...prev, payload.kpi];
+                                    const cacheKey = `${id}_${state_filter || 'national'}`;
+                                    if (!dashboardCache.current[cacheKey]) dashboardCache.current[cacheKey] = { cards: [], kpis: [] };
+                                    dashboardCache.current[cacheKey].kpis = next;
+                                    return next;
+                                });
                                 continue;
                             }
                             if (payload.chart) {
                                 const newCard: ChartCard = { ...payload.chart, phase: 2 };
                                 setCards(prev => {
                                     if (prev.find(c => c.id === newCard.id)) return prev;
-                                    return [...prev, newCard];
+                                    const next = [...prev, newCard];
+                                    const cacheKey = `${id}_${state_filter || 'national'}`;
+                                    if (!dashboardCache.current[cacheKey]) dashboardCache.current[cacheKey] = { cards: [], kpis: [] };
+                                    dashboardCache.current[cacheKey].cards = next;
+                                    return next;
                                 });
                                 setStreamProgress(p => p + 1);
                             }
@@ -279,7 +345,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                 method: 'POST',
                 body: JSON.stringify({ dataset_id: datasetId, prompt: q }),
             });
-            setCards(prev => prev.map(c => c.id === id ? { ...data.chart, loading: false } : c));
+            setCards(prev => prev.map(c => c.id === id ? { ...c, ...data.chart, id: c.id, loading: false } : c));
         } catch (e: unknown) {
             let msg = (e as Error).message || 'Failed';
             try { msg = JSON.parse(msg).detail ?? msg; } catch { /**/ }
@@ -369,6 +435,12 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     {datasetId && (
                         <>
+                            {selectedState && (
+                                <button className="action-btn" onClick={() => { setSelectedState(null); fetchPhase1(datasetId, null); }}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)', color: '#f59e0b', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                    🔙 Back to National
+                                </button>
+                            )}
                             <label className="action-btn"
                                 style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(52,211,153,0.15)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
                                 <UploadCloud size={15} /> Upload
@@ -514,7 +586,17 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                     {!card.loading && !card.error && card.chart_config && Object.keys(card.chart_config).length > 0 && (
                                         <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
                                             <div style={{ width: '100%', height: 260 }}>
-                                                <EChart option={card.chart_config} />
+                                                <EChart option={card.chart_config} onChartClick={(params: any) => {
+                                                    if (params.seriesType === 'map' && params.name) {
+                                                        const mapType = (card.chart_config.series as Array<{ type?: string; map?: string }>).find(s => s.type === 'map')?.map || 'India';
+                                                        if (mapType === 'India') {
+                                                            setSelectedState(params.name);
+                                                            if (datasetId) {
+                                                                fetchPhase1(datasetId, params.name);
+                                                            }
+                                                        }
+                                                    }
+                                                }} />
                                             </div>
                                             {card.insight && (
                                                 <div style={{ padding: '10px 14px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 10, fontSize: 12, color: '#cbd5e1', lineHeight: 1.5 }}>
@@ -563,7 +645,18 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                     </div>
                     <div style={{ flex: 1, padding: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <div style={{ width: '100%', height: '100%', background: '#0a1023', borderRadius: 24, padding: 20, border: '1px solid rgba(52,211,153,0.2)' }}>
-                            <EChart option={expandedChart.chart_config} />
+                            <EChart option={expandedChart.chart_config} onChartClick={(params: any) => {
+                                if (params.seriesType === 'map' && params.name) {
+                                    const mapType = (expandedChart.chart_config.series as Array<{ type?: string; map?: string }>).find(s => s.type === 'map')?.map || 'India';
+                                    if (mapType === 'India') {
+                                        setSelectedState(params.name);
+                                        setExpandedChart(null);
+                                        if (datasetId) {
+                                            fetchPhase1(datasetId, params.name);
+                                        }
+                                    }
+                                }
+                            }} />
                         </div>
                     </div>
                 </div>
