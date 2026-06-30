@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, BarChart2, Plus, UploadCloud, Cpu, Zap, Maximize2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
+import html2pdf from 'html2pdf.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -158,7 +159,21 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
     const abortControllerRef = useRef<AbortController | null>(null);
     
     // Cache for dashboard states (national + individual states)
-    const dashboardCache = useRef<Record<string, { kpis: KPI[], cards: ChartCard[] }>>({});
+    const getInitialCache = () => {
+        try {
+            const cached = localStorage.getItem('nemhemai_dashboard_cache');
+            return cached ? JSON.parse(cached) : {};
+        } catch { return {}; }
+    };
+    const dashboardCache = useRef<Record<string, { kpis: KPI[], cards: ChartCard[] }>>(getInitialCache());
+
+    const persistCache = () => {
+        try {
+            localStorage.setItem('nemhemai_dashboard_cache', JSON.stringify(dashboardCache.current));
+        } catch (e) {
+            console.error("Failed to save to localStorage", e);
+        }
+    };
 
     // Initialization and Local Storage Persistence
     useEffect(() => {
@@ -168,6 +183,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                 setDatasetId(savedId);
                 fetchPhase1(savedId).catch(() => {
                     localStorage.removeItem('nemhemai_dataset_id');
+                    localStorage.removeItem('nemhemai_dashboard_cache');
                     setDatasetId(null);
                 });
             }
@@ -192,6 +208,8 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             setDatasetId(data.dataset_id);
             setSelectedState(null);
             localStorage.setItem('nemhemai_dataset_id', data.dataset_id);
+            localStorage.removeItem('nemhemai_dashboard_cache');
+            dashboardCache.current = {};
             await fetchPhase1(data.dataset_id);
         } catch (err) {
             console.error(err);
@@ -225,6 +243,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             setKpis(data.kpis);
             
             dashboardCache.current[cacheKey] = { cards: phase1Cards, kpis: data.kpis };
+            persistCache();
 
             // Kick off Phase 2 streaming after Phase 1 arrives
             startPhase2Stream(id, state_filter);
@@ -300,6 +319,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                     const cacheKey = `${id}_${state_filter || 'national'}`;
                                     if (!dashboardCache.current[cacheKey]) dashboardCache.current[cacheKey] = { cards: [], kpis: [] };
                                     dashboardCache.current[cacheKey].kpis = next;
+                                    persistCache();
                                     return next;
                                 });
                                 continue;
@@ -312,6 +332,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                     const cacheKey = `${id}_${state_filter || 'national'}`;
                                     if (!dashboardCache.current[cacheKey]) dashboardCache.current[cacheKey] = { cards: [], kpis: [] };
                                     dashboardCache.current[cacheKey].cards = next;
+                                    persistCache();
                                     return next;
                                 });
                                 setStreamProgress(p => p + 1);
@@ -331,27 +352,52 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
 
     // ── Custom Prompt ────────────────────────────────────────────────────────
     const addCustom = async () => {
-        const q = customPrompt.trim();
-        if (!q || addingCustom || !datasetId) return;
+        if (!customPrompt.trim() || !datasetId || addingCustom) return;
+        
+        const cid = 'custom_' + Date.now();
         setAddingCustom(true);
-
-        const id = `custom_${Date.now()}`;
-        setCards(prev => [{ id, prompt: q, title: `Query: ${q}`, chart_config: {}, loading: true }, ...prev]);
-        setShowPromptBar(false);
         setCustomPrompt('');
+        setShowPromptBar(false);
+        setCards(prev => [{
+            id: cid,
+            title: customPrompt,
+            chart_config: {},
+            loading: true
+        }, ...prev]);
 
         try {
-            const data = await apiFetch<{ chart: ChartCard }>('/analytics/prompt', {
+            const res = await apiFetch(`/api/analytics/custom-chart`, {
                 method: 'POST',
-                body: JSON.stringify({ dataset_id: datasetId, prompt: q }),
+                body: JSON.stringify({ dataset_id: datasetId, prompt: customPrompt, state_filter: selectedState })
             });
-            setCards(prev => prev.map(c => c.id === id ? { ...c, ...data.chart, id: c.id, loading: false } : c));
-        } catch (e: unknown) {
-            let msg = (e as Error).message || 'Failed';
-            try { msg = JSON.parse(msg).detail ?? msg; } catch { /**/ }
-            setCards(prev => prev.map(c => c.id === id ? { ...c, loading: false, error: msg } : c));
+            if (res.error) throw new Error(res.error);
+
+            setCards(prev => prev.map(c => c.id === cid ? { ...c, ...res.data, id: res.data.id || cid, loading: false } : c));
+        } catch (err: any) {
+            setCards(prev => prev.map(c => c.id === cid ? { ...c, error: err.message || 'Failed to generate', loading: false } : c));
+        } finally {
+            setAddingCustom(false);
         }
-        setAddingCustom(false);
+    };
+
+    const handleDownloadPDF = async () => {
+        const element = document.getElementById('dashboard-pdf-content');
+        if (!element) return;
+        
+        const opt = {
+            margin:       10,
+            filename:     'NemhemAI_Analysis_Report.pdf',
+            image:        { type: 'jpeg', quality: 0.98 },
+            html2canvas:  { scale: 2, useCORS: true, logging: false },
+            jsPDF:        { unit: 'mm', format: 'a4', orientation: 'landscape' }
+        };
+        
+        try {
+            await html2pdf().set(opt).from(element).save();
+        } catch (err) {
+            console.error('Failed to download PDF:', err);
+            alert('Failed to generate PDF report.');
+        }
     };
 
     const handleKey = (e: React.KeyboardEvent) => { if (e.key === 'Enter') addCustom(); };
@@ -450,6 +496,10 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                 style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'linear-gradient(135deg,#34d399,#22d3ee)', border: 'none', color: '#071019', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
                                 <Plus size={15} /> Add Chart
                             </button>
+                            <button className="action-btn" onClick={handleDownloadPDF}
+                                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(52,211,153,0.15)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                Download Analysis
+                            </button>
                         </>
                     )}
                     <button className="close-btn" onClick={onClose}
@@ -479,7 +529,8 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             )}
 
             {/* ── MAIN CONTENT ───────────────────────────────────────────── */}
-            <div className="dash-scroll" style={{ flex: 1, overflowY: 'auto', padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: 22 }}>
+            <div className="dash-scroll" style={{ flex: 1, overflowY: 'auto', padding: '22px 24px' }}>
+                <div id="dashboard-pdf-content" style={{ display: 'flex', flexDirection: 'column', gap: 22, minHeight: '100%', background: '#071019' }}>
 
                 {/* UPLOAD SCREEN */}
                 {!datasetId && !isUploading && (
@@ -627,6 +678,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                         ))}
                     </div>
                 )}
+                </div>
             </div>
 
             {/* EXPANDED CHART MODAL */}

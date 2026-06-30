@@ -61,6 +61,7 @@
     "date-fns": "^3.6.0",
     "electron-updater": "^6.7.3",
     "embla-carousel-react": "^8.3.0",
+    "html2pdf.js": "^0.14.0",
     "input-otp": "^1.2.4",
     "jwt-decode": "^4.0.0",
     "lucide-react": "^0.462.0",

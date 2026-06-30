@@ -589,7 +589,6 @@ async def state_detail(payload: Dict[str,Any]):
         }, 1))
     return {"charts":charts,"kpis":kpis}
 
-
 # ─── Custom prompt ────────────────────────────────────────────────────────────
 @router.post("/prompt")
 async def handle_prompt(payload: Dict[str,Any]):
@@ -598,34 +597,82 @@ async def handle_prompt(payload: Dict[str,Any]):
     cache = dataset_cache[did]
     df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
     stext = schema_text(cache, df)
-    full_prompt = f"""You are a data visualization expert. Generate ONE ECharts configuration for this request.
-
+    
+    full_prompt = f"""You are a data visualization expert. Generate ONE chart recipe for this request.
+  
 DATASET SCHEMA:
 {stext}
 
 USER REQUEST: {prompt_text}
 
 RULES:
-- Output ONLY a single JSON object (not array). NO markdown. Start with {{
-- Structure: {{"id":"custom_1","title":"Title","chart_config":{{...ECharts option...}}}}
+- Output ONLY a single JSON object. NO markdown. Start with {{
+- Structure: {{"title": "Descriptive Title", "type": "funnel", "x_column": "Exact_Column", "y_column": "Exact_Column", "aggregation": "sum"}}
+- Valid types: bar, line, pie, area, scatter, funnel
+- Valid aggregations: sum, avg, count
 - Use REAL column names from schema.
 
 JSON ONLY:"""
     try:
         from config import OLLAMA_BASE_URL
         r = req_lib.post(f"{OLLAMA_BASE_URL}/api/generate",
-            json={"model":"llama3.2:3b","prompt":full_prompt,"stream":False,
-                  "options":{"temperature":0.1,"num_ctx":4096,"num_predict":2048}},timeout=120)
+            json={"model":"qwen2.5-coder:7b","prompt":full_prompt,"stream":False,
+                  "options":{"temperature":0.1,"num_ctx":2048,"num_predict":2048}},timeout=120)
         raw = r.json().get("response","")
         text = re.sub(r"<think>.*?</think>","",raw,flags=re.DOTALL).strip()
         for fence in ("```json","```"):
             if fence in text: text = text.split(fence)[1].split("```")[0].strip(); break
         s,e = text.find("{"), text.rfind("}")
         if s!=-1 and e!=-1: text = text[s:e+1]
-        ch = json.loads(text)
-        if not isinstance(ch.get("chart_config"), dict) or "series" not in ch.get("chart_config", {}):
-            raise ValueError("Invalid chart_config generated")
-        _base_style(ch["chart_config"], 2)
+        recipe = json.loads(text)
+        
+        ch_type = recipe.get("type", "bar")
+        x_col = recipe.get("x_column")
+        y_col = recipe.get("y_column")
+        agg_type = recipe.get("aggregation", "sum")
+        title = recipe.get("title", f"Query: {prompt_text}")
+        
+        col_map = {str(c).lower(): str(c) for c in df.columns}
+        x_col = col_map.get(str(x_col).lower(), x_col)
+        y_col = col_map.get(str(y_col).lower(), y_col)
+        
+        if x_col not in df.columns or y_col not in df.columns:
+            raise ValueError("Invalid columns in recipe")
+            
+        # Aggregate Data
+        df_clean = df.dropna(subset=[x_col, y_col])
+        if agg_type == "avg":
+            agg = df_clean.groupby(x_col)[y_col].mean().nlargest(15).reset_index()
+        elif agg_type == "count":
+            agg = df_clean.groupby(x_col)[y_col].count().nlargest(15).reset_index()
+        else:
+            agg = df_clean.groupby(x_col)[y_col].sum().nlargest(15).reset_index()
+            
+        x_data = agg[x_col].astype(str).tolist()
+        y_data = agg[y_col].tolist()
+        
+        if ch_type in ["pie", "funnel"]:
+            chart_config = {
+                "series": [{"type": ch_type, "data": [{"name": str(x), "value": y} for x, y in zip(x_data, y_data)], "label": {"position": "inside", "color": "#0f172a", "fontWeight": "bold"}}]
+            }
+        elif ch_type == "area":
+            chart_config = {
+                "xAxis": {"type": "category", "data": x_data},
+                "yAxis": {"type": "value"},
+                "series": [{"type": "line", "areaStyle": {}, "data": y_data}]
+            }
+        else:
+            chart_config = {
+                "xAxis": {"type": "category", "data": x_data},
+                "yAxis": {"type": "value"},
+                "series": [{"type": ch_type, "data": y_data}]
+            }
+            
+        ch = {
+            "id": f"c_{uuid.uuid4().hex[:6]}",
+            "title": title,
+            "chart_config": _base_style(chart_config, 0)
+        }
         return {"chart": ch}
     except Exception as ex:
         print(f"[Prompt] {ex}")
