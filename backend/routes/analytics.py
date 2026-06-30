@@ -75,8 +75,10 @@ def _base_style(config: dict, palette_idx: int) -> dict:
             s.setdefault("areaStyle",{}).update({"opacity":0.2,"color":p[0]["color"]})
     return config
 
-def make_chart(cid, title, config, phase_idx):
-    return {"id": cid, "title": title, "chart_config": _base_style(config, phase_idx)}
+def make_chart(cid, title, config, phase_idx, insight=None):
+    chart = {"id": cid, "title": title, "chart_config": _base_style(config, phase_idx)}
+    if insight: chart["insight"] = insight
+    return chart
 
 # ─── Schema / KPI helpers ─────────────────────────────────────────────────────
 def schema_text(cache, df):
@@ -167,6 +169,20 @@ STATE_ABBR = {
 def format_labels(labels):
     return [STATE_ABBR.get(str(lbl).strip().lower(), str(lbl)) for lbl in labels]
 
+def generate_insight(x_data, y_data, x_col, y_col, agg_type="sum"):
+    if not x_data or not y_data or len(x_data) == 0: return ""
+    pairs = sorted(zip(x_data, y_data), key=lambda x: x[1], reverse=True)
+    if agg_type == "sum": prefix = f"Top {x_col} by Total {y_col}"
+    elif agg_type in ["avg", "mean"]: prefix = f"Top {x_col} by Avg {y_col}"
+    else: prefix = f"Top {x_col} by Count"
+    
+    top_3 = [f"{k} ({v:,.2f})" for k, v in pairs[:3]]
+    insight = f"{prefix}: " + ", ".join(top_3)
+    if len(pairs) > 3:
+        lowest = pairs[-1]
+        insight += f". Lowest is {lowest[0]} ({lowest[1]:,.2f})."
+    return insight
+
 @router.post("/detect-geo")
 async def detect_geo(payload: Dict[str,Any]):
     did = payload.get("dataset_id")
@@ -205,13 +221,14 @@ async def auto_charts(payload: Dict[str,Any]):
     # ── Chart 1: Horizontal Bar — top N category by numeric ──────────────────
     if cat1 and num1:
         agg = df.groupby(cat1)[num1].sum().nlargest(12).reset_index()
+        insight_text = generate_insight(agg[cat1].tolist(), agg[num1].tolist(), cat1, num1, "sum")
         charts.append(make_chart("p1_bar", f"Top {cat1} by {num1}", {
             "grid": {"left":"2%","right":"12%","bottom":"3%","top":"4%","containLabel":True},
             "xAxis": {"type":"value"},
             "yAxis": {"type":"category","data": format_labels(agg[cat1].astype(str).tolist()[::-1])},
             "series": [{"type":"bar","data": [round(v,2) for v in agg[num1].tolist()[::-1]],
                         "label":{"show":True,"position":"right","color":"#cbd5e1","fontSize":10}}]
-        }, 0))
+        }, 0, insight=insight_text))
 
     # ── Chart 2: Donut Pie — diverse category/numeric ────────────────────
     pie_cat = cat2 if cat2 else cat1
@@ -220,10 +237,11 @@ async def auto_charts(payload: Dict[str,Any]):
         agg = df.groupby(pie_cat)[pie_num].sum().nlargest(8).reset_index()
         pie_labels = format_labels(agg[pie_cat].astype(str).tolist())
         pie_data = [{"name":n,"value":round(float(r[pie_num]),2)} for n, (_,r) in zip(pie_labels, agg.iterrows())]
+        insight_text = generate_insight(pie_labels, agg[pie_num].tolist(), pie_cat, pie_num, "sum")
         charts.append(make_chart("p1_pie", f"{pie_num} Share by {pie_cat}", {
             "series": [{"type":"pie","radius":["42%","72%"],"center":["50%","55%"],
                         "data":pie_data,"label":{"formatter":"{b}\n{d}%","fontSize":11}}]
-        }, 1))
+        }, 1, insight=insight_text))
 
     # ── Chart 3: Line trend OR stacked bar OR secondary bar ───────────────────
     if datetime_cols and num1:
@@ -232,15 +250,17 @@ async def auto_charts(payload: Dict[str,Any]):
             df[dt] = pd.to_datetime(df[dt])
             ts = df.groupby(df[dt].dt.to_period("M").astype(str))[num1].sum().reset_index()
             ts.columns = [dt, num1]
+            insight_text = generate_insight(ts[dt].tolist(), ts[num1].tolist(), dt, num1, "sum")
             charts.append(make_chart("p1_line", f"{num1} Over Time", {
                 "grid":{"left":"4%","right":"4%","bottom":"4%","top":"8%","containLabel":True},
                 "xAxis":{"type":"category","data":ts[dt].tolist(),"boundaryGap":False},
                 "yAxis":{"type":"value"},
                 "series":[{"type":"line","data":[round(v,2) for v in ts[num1].tolist()]}]
-            }, 2))
+            }, 2, insight=insight_text))
         except Exception: pass
     elif cat1 and num1 and num2:
         agg = df.groupby(cat1)[[num1,num2]].sum().nlargest(8,num1).reset_index()
+        insight_text = generate_insight(agg[cat1].tolist(), agg[num1].tolist(), cat1, num1, "sum")
         charts.append(make_chart("p1_stacked", f"{num1} vs {num2} by {cat1}", {
             "grid":{"left":"4%","right":"4%","bottom":"4%","top":"8%","containLabel":True},
             "xAxis":{"type":"category","data":format_labels(agg[cat1].astype(str).tolist())},
@@ -250,23 +270,24 @@ async def auto_charts(payload: Dict[str,Any]):
                 {"name":num2,"type":"bar","data":[round(v,2) for v in agg[num2].tolist()],"stack":"s"}
             ],
             "legend":{"textStyle":{"color":"#94a3b8"}}
-        }, 2))
+        }, 2, insight=insight_text))
     elif cat2 and num1:
         # Fallback to secondary categorical breakdown if first two didn't fire
         agg = df.groupby(cat2)[num1].sum().nlargest(10).reset_index()
+        insight_text = generate_insight(agg[cat2].tolist(), agg[num1].tolist(), cat2, num1, "sum")
         charts.append(make_chart("p1_bar2", f"{num1} by {cat2}", {
             "grid":{"left":"2%","right":"12%","bottom":"3%","top":"4%","containLabel":True},
             "xAxis":{"type":"category","data":format_labels(agg[cat2].astype(str).tolist())},
             "yAxis":{"type":"value"},
             "series":[{"type":"bar","data":[round(v,2) for v in agg[num1].tolist()]}]
-        }, 2))
+        }, 2, insight=insight_text))
 
     return {"charts": charts, "kpis": kpis}
 
 
 # ─── PHASE 2: LLM Batch→Trickle SSE ─────────────────────────────────────────
 RECIPE_PROMPT = """You are a Data Visualization Expert.
-Analyze the schema below and generate a JSON array of exactly 7 chart "recipes".
+Analyze the schema below and generate a JSON array of exactly 10 chart "recipes".
 We will use these recipes to aggregate the actual data in Python.
 
 DATASET SCHEMA:
@@ -275,9 +296,9 @@ DATASET SCHEMA:
 RULES:
 1. Output ONLY a valid JSON array of objects. NO markdown formatting, NO explanations. Start directly with [
 2. Each recipe MUST have this exact structure:
-   {{"title": "Descriptive Title", "type": "bar", "x_column": "Exact_Column_Name", "y_column": "Exact_Column_Name", "aggregation": "sum"}}
-3. Valid "type" values MUST BE EXACTLY these: map, gauge, area, line, pie, horizontalBar, kpi. 
-4. You MUST generate exactly ONE of each type. Do not repeat chart types!
+   {{"title": "Descriptive Title", "type": "funnel", "x_column": "Exact_Column_Name", "y_column": "Exact_Column_Name", "aggregation": "sum"}}
+3. Your JSON array MUST contain EXACTLY 10 objects.
+4. Each object MUST use a DIFFERENT "type" from this exact list: ["map", "gauge", "area", "line", "pie", "horizontalBar", "kpi", "scatter", "histogram", "funnel"]. You must use ALL 10 types exactly once.
 5. For "map", include an extra key "map_region" (either "world" or "India"). The x_column for "map" MUST be a State/Province/Region column to color individual states (DO NOT use Country column).
 6. Valid "aggregation" values: sum, avg, count
 7. Use REAL column names from the schema. Check spelling carefully.
@@ -316,13 +337,24 @@ def parse_llm_output(raw: str) -> list:
 
 @router.get("/auto-charts/stream")
 async def auto_charts_stream(dataset_id: str):
-    """Phase 2: LLM generates 7 complex charts, trickled one-by-one via SSE."""
+    """Phase 2: LLM generates 10 complex charts, trickled one-by-one via SSE."""
     if not dataset_id or dataset_id not in dataset_cache:
         raise HTTPException(404, "Dataset not found")
     cache = dataset_cache[dataset_id]
 
     async def generate():
         print(f"[Phase-2] Stream generator started for dataset {dataset_id}", flush=True)
+        
+        if "phase2_charts" in cache and cache.get("phase2_done"):
+            print("[Phase-2] Serving from cache!", flush=True)
+            for item in cache["phase2_charts"]:
+                yield f"data: {json.dumps(item)}\n\n"
+            yield 'data: {"done":true}\n\n'
+            return
+            
+        cache["phase2_charts"] = []
+        cache["phase2_done"] = False
+        
         try:
             df = (pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv")
                   else pd.read_excel(cache["file_path"]))
@@ -391,7 +423,9 @@ async def auto_charts_stream(dataset_id: str):
                                         if ch_type == "kpi":
                                             val = agg[y_col].sum() if agg_type == "sum" else (agg[y_col].mean() if agg_type in ["avg","mean"] else agg[y_col].count())
                                             kpi_obj = {"label": title, "value": f"{val:,.2f}", "sub": f"Aggregated {y_col}", "icon": "📊", "color": "blue"}
-                                            yield f"data: {json.dumps({'kpi': kpi_obj})}\n\n"
+                                            payload_dict = {'kpi': kpi_obj}
+                                            cache["phase2_charts"].append(payload_dict)
+                                            yield f"data: {json.dumps(payload_dict)}\n\n"
                                             continue
 
                                         if ch_type == "map":
@@ -407,7 +441,14 @@ async def auto_charts_stream(dataset_id: str):
                                         elif ch_type == "gauge":
                                             val = round(agg[y_col].mean(), 2) if agg_type in ["avg", "mean"] else round(agg[y_col].sum(), 2)
                                             chart_config = {
-                                                "series": [{"type": "gauge", "data": [{"value": val, "name": title}], "progress": {"show": True}, "detail": {"valueAnimation": True, "formatter": "{value}"}}]
+                                                "series": [{
+                                                    "type": "gauge",
+                                                    "max": max(val * 1.5, 100),
+                                                    "axisLabel": {"show": False},
+                                                    "data": [{"value": val, "name": ""}],
+                                                    "progress": {"show": True}, 
+                                                    "detail": {"valueAnimation": True, "formatter": "{value}", "fontSize": 24, "offsetCenter": [0, "40%"]}
+                                                }]
                                             }
                                         elif ch_type == "horizontalBar":
                                             chart_config = {
@@ -421,6 +462,22 @@ async def auto_charts_stream(dataset_id: str):
                                                 "yAxis": {"type": "value"},
                                                 "series": [{"type": "line", "areaStyle": {}, "data": y_data}]
                                             }
+                                        elif ch_type == "scatter":
+                                            chart_config = {
+                                                "xAxis": {"type": "category", "data": x_data},
+                                                "yAxis": {"type": "value"},
+                                                "series": [{"type": "scatter", "data": y_data, "symbolSize": 14, "itemStyle": {"opacity": 0.8}}]
+                                            }
+                                        elif ch_type == "histogram":
+                                            chart_config = {
+                                                "xAxis": {"type": "category", "data": x_data},
+                                                "yAxis": {"type": "value"},
+                                                "series": [{"type": "bar", "data": y_data, "barWidth": "99.5%"}]
+                                            }
+                                        elif ch_type == "funnel":
+                                            chart_config = {
+                                                "series": [{"type": "funnel", "data": [{"name": str(x), "value": y} for x, y in zip(x_data, y_data)], "label": {"position": "inside", "color": "#0f172a", "fontWeight": "bold"}}]
+                                            }
                                         else:
                                             chart_config = {
                                                 "xAxis": {"type": "category", "data": x_data},
@@ -428,14 +485,19 @@ async def auto_charts_stream(dataset_id: str):
                                                 "series": [{"type": ch_type, "data": y_data}]
                                             }
                                         
+                                        insight_text = generate_insight(x_data, y_data, x_col, y_col, agg_type)
+                                        
                                         ch = {
                                             "id": f"p2_chart_{int(time.time()*100)}_{recipe_index}",
                                             "title": title,
-                                            "chart_config": chart_config
+                                            "chart_config": chart_config,
+                                            "insight": insight_text
                                         }
                                         styled = _base_style(ch.get("chart_config", {}), (recipe_index + 3) % len(PALETTES))
                                         ch["chart_config"] = styled
-                                        payload = json.dumps({"chart": ch, "index": recipe_index + 3})
+                                        payload_dict = {"chart": ch, "index": recipe_index + 3}
+                                        cache["phase2_charts"].append(payload_dict)
+                                        payload = json.dumps(payload_dict)
                                         yield f"data: {payload}\n\n"
                                         
                                     except Exception as e:
@@ -445,6 +507,7 @@ async def auto_charts_stream(dataset_id: str):
                         except Exception as e:
                             pass
             
+            cache["phase2_done"] = True
             yield 'data: {"done":true}\n\n'
 
         except json.JSONDecodeError as je:

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, BarChart2, Plus, UploadCloud, Cpu, Zap } from 'lucide-react';
+import { X, BarChart2, Plus, UploadCloud, Cpu, Zap, Maximize2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -13,6 +13,7 @@ interface ChartCard {
     loading?: boolean;
     error?: string;
     phase?: 1 | 2;  // 1 = fast model, 2 = complex model
+    insight?: string;
 }
 
 interface KPI {
@@ -114,11 +115,12 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
 
     const [cards, setCards] = useState<ChartCard[]>([]);
     const [kpis, setKpis] = useState<KPI[]>([]);
+    const [expandedChart, setExpandedChart] = useState<ChartCard | null>(null);
 
     // Streaming state
     const [isPhase1Loading, setIsPhase1Loading] = useState(false);
     const [isPhase2Streaming, setIsPhase2Streaming] = useState(false);
-    const [streamProgress, setStreamProgress] = useState(0); // 0-7 charts
+    const [streamProgress, setStreamProgress] = useState(0); // 0-10 charts
 
     const [customPrompt, setCustomPrompt] = useState('');
     const [addingCustom, setAddingCustom] = useState(false);
@@ -126,18 +128,17 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
     const inputRef = useRef<HTMLInputElement>(null);
     const esRef = useRef<EventSource | null>(null);
 
-    // Reset when closed
+    // Initialization and Local Storage Persistence
     useEffect(() => {
-        if (!open) {
-            setDatasetId(null);
-            setCards([]);
-            setKpis([]);
-            setShowPromptBar(false);
-            setCustomPrompt('');
-            setIsPhase1Loading(false);
-            setIsPhase2Streaming(false);
-            setStreamProgress(0);
-            if (esRef.current) { esRef.current.close(); esRef.current = null; }
+        if (open) {
+            const savedId = localStorage.getItem('nemhemai_dataset_id');
+            if (savedId && !datasetId && cards.length === 0) {
+                setDatasetId(savedId);
+                fetchPhase1(savedId).catch(() => {
+                    localStorage.removeItem('nemhemai_dataset_id');
+                    setDatasetId(null);
+                });
+            }
         }
     }, [open]);
 
@@ -157,6 +158,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             if (!res.ok) throw new Error('Upload failed');
             const data = await res.json();
             setDatasetId(data.dataset_id);
+            localStorage.setItem('nemhemai_dataset_id', data.dataset_id);
             await fetchPhase1(data.dataset_id);
         } catch (err) {
             console.error(err);
@@ -182,6 +184,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             startPhase2Stream(id);
         } catch (err) {
             console.error('Phase 1 failed', err);
+            throw err;
         } finally {
             setIsPhase1Loading(false);
         }
@@ -291,7 +294,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
 
     const totalExpected = 10;
     const totalLoaded = cards.filter(c => !c.loading).length;
-    const streamPct = isPhase2Streaming ? Math.round((streamProgress / 7) * 100) : 100;
+    const streamPct = isPhase2Streaming ? Math.round((streamProgress / 10) * 100) : 100;
 
     return (
         <div style={{
@@ -352,7 +355,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                             <>
                                 <Cpu size={13} color="#34d399" />
                                 <span style={{ fontSize: 12, color: '#34d399', fontWeight: 500 }}>
-                                    AI analysing... {streamProgress}/7 complex charts
+                                    AI analysing... {streamProgress}/10 complex charts
                                 </span>
                                 <div style={{ width: 80, height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 4, overflow: 'hidden' }}>
                                     <div style={{ height: '100%', width: `${streamPct}%`, background: 'linear-gradient(90deg,#34d399,#22d3ee)', borderRadius: 4, transition: 'width 0.4s ease' }} />
@@ -365,10 +368,17 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                 {/* Right: actions */}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     {datasetId && (
-                        <button className="action-btn" onClick={() => { setShowPromptBar(p => !p); setTimeout(() => inputRef.current?.focus(), 100); }}
-                            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'linear-gradient(135deg,#34d399,#22d3ee)', border: 'none', color: '#071019', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
-                            <Plus size={15} /> Add Chart
-                        </button>
+                        <>
+                            <label className="action-btn"
+                                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(52,211,153,0.15)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                <UploadCloud size={15} /> Upload
+                                <input type="file" accept=".csv,.xlsx,.xls" onChange={handleFileUpload} style={{ display: 'none' }} />
+                            </label>
+                            <button className="action-btn" onClick={() => { setShowPromptBar(p => !p); setTimeout(() => inputRef.current?.focus(), 100); }}
+                                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'linear-gradient(135deg,#34d399,#22d3ee)', border: 'none', color: '#071019', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                <Plus size={15} /> Add Chart
+                            </button>
+                        </>
                     )}
                     <button className="close-btn" onClick={onClose}
                         style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 9, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>
@@ -406,11 +416,11 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                             <UploadCloud size={52} color="#34d399" style={{ marginBottom: 18 }} />
                             <h2 style={{ fontSize: 24, margin: '0 0 8px', color: '#f8fafc' }}>Upload Dataset</h2>
                             <p style={{ fontSize: 14, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
-                                Drop a CSV or Excel file. Our <span style={{ color: '#34d399', fontWeight: 600 }}>Hybrid AI Engine</span> will instantly generate 3 fast charts, then stream 7 complex ones as they're analyzed by a 7B coding model.
+                                Drop a CSV or Excel file. Our <span style={{ color: '#34d399', fontWeight: 600 }}>Hybrid AI Engine</span> will instantly generate 3 fast charts, then stream 10 complex ones as they're analyzed by a 7B coding model.
                             </p>
                             <div style={{ display: 'flex', justifyContent: 'center', gap: 20, margin: '20px 0', fontSize: 12, color: '#475569' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Zap size={12} color="#f59e0b" /> <span>Phase 1: qwen3.5:0.8b → 3 charts</span></div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Cpu size={12} color="#34d399" /> <span>Phase 2: qwen2.5-coder:7b → 7 charts</span></div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Cpu size={12} color="#34d399" /> <span>Phase 2: qwen2.5-coder:7b → 10 charts</span></div>
                             </div>
                             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '11px 28px', background: 'linear-gradient(135deg,#34d399,#22d3ee)', color: '#071019', fontWeight: 700, borderRadius: 14, cursor: 'pointer', fontSize: 14 }}>
                                 Browse File
@@ -473,26 +483,18 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                     minHeight: 340,
                                     position: 'relative',
                                 }}>
-                                {/* Phase badge */}
-                                {card.phase && (
-                                    <div style={{
-                                        position: 'absolute', top: 10, right: 12,
-                                        display: 'flex', alignItems: 'center', gap: 4,
-                                        padding: '3px 8px', borderRadius: 20,
-                                        background: card.phase === 1 ? 'rgba(245,158,11,0.12)' : 'rgba(99,102,241,0.12)',
-                                        border: `1px solid ${card.phase === 1 ? 'rgba(245,158,11,0.2)' : 'rgba(99,102,241,0.2)'}`,
-                                        fontSize: 10, color: card.phase === 1 ? '#f59e0b' : '#818cf8', fontWeight: 600, zIndex: 1
-                                    }}>
-                                        {card.phase === 1 ? <Zap size={10} /> : <Cpu size={10} />}
-                                        {card.phase === 1 ? 'Fast' : 'AI+'}
-                                    </div>
-                                )}
+
 
                                 {/* Card header */}
                                 <div style={{ padding: '14px 18px 10px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
                                     <div style={{ fontSize: 13, color: card.phase === 2 ? '#818cf8' : '#34d399', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 60 }}>
                                         {card.title}
                                     </div>
+                                    {!card.loading && (
+                                        <button onClick={() => setExpandedChart(card)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center' }} title="Expand Chart">
+                                            <Maximize2 size={16} />
+                                        </button>
+                                    )}
                                 </div>
 
                                 {/* Card body */}
@@ -510,8 +512,16 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                         </div>
                                     )}
                                     {!card.loading && !card.error && card.chart_config && Object.keys(card.chart_config).length > 0 && (
-                                        <div style={{ width: '100%', height: 280 }}>
-                                            <EChart option={card.chart_config} />
+                                        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                            <div style={{ width: '100%', height: 260 }}>
+                                                <EChart option={card.chart_config} />
+                                            </div>
+                                            {card.insight && (
+                                                <div style={{ padding: '10px 14px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 10, fontSize: 12, color: '#cbd5e1', lineHeight: 1.5 }}>
+                                                    <span style={{ color: card.phase === 2 ? '#818cf8' : '#34d399', fontWeight: 600, marginRight: 6 }}>Insight:</span>
+                                                    {card.insight}
+                                                </div>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -519,7 +529,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                         ))}
 
                         {/* Skeleton placeholders while Phase 2 streams */}
-                        {isPhase2Streaming && Array.from({ length: Math.max(0, 7 - streamProgress) }).map((_, i) => (
+                        {isPhase2Streaming && Array.from({ length: Math.max(0, 10 - streamProgress) }).map((_, i) => (
                             <div key={`skeleton_${i}`} style={{
                                 background: 'rgba(10,16,35,0.5)',
                                 border: '1px dashed rgba(99,102,241,0.15)',
@@ -536,6 +546,28 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                     </div>
                 )}
             </div>
+
+            {/* EXPANDED CHART MODAL */}
+            {expandedChart && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+                    background: 'rgba(5, 8, 15, 0.95)', zIndex: 99999,
+                    display: 'flex', flexDirection: 'column',
+                    animation: 'fadeUp 0.2s ease-out'
+                }}>
+                    <div style={{ padding: '20px 40px', display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                        <h2 style={{ color: '#f8fafc', margin: 0, fontSize: 24, fontWeight: 500 }}>{expandedChart.title}</h2>
+                        <button onClick={() => setExpandedChart(null)} style={{ marginLeft: 'auto', background: 'rgba(255,255,255,0.1)', border: 'none', color: '#f8fafc', cursor: 'pointer', padding: 8, borderRadius: '50%', display: 'flex' }}>
+                            <X size={24} />
+                        </button>
+                    </div>
+                    <div style={{ flex: 1, padding: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <div style={{ width: '100%', height: '100%', background: '#0a1023', borderRadius: 24, padding: 20, border: '1px solid rgba(52,211,153,0.2)' }}>
+                            <EChart option={expandedChart.chart_config} />
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
