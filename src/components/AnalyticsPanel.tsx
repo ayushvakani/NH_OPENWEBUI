@@ -141,6 +141,7 @@ interface AnalyticsPanelProps {
 export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
     const [datasetId, setDatasetId] = useState<string | null>(null);
     const [selectedState, setSelectedState] = useState<string | null>(null);
+    const [selectedCity, setSelectedCity] = useState<string | null>(null);
     const [isUploading, setIsUploading] = useState(false);
 
     const [cards, setCards] = useState<ChartCard[]>([]);
@@ -207,6 +208,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             const data = await res.json();
             setDatasetId(data.dataset_id);
             setSelectedState(null);
+            setSelectedCity(null);
             localStorage.setItem('nemhemai_dataset_id', data.dataset_id);
             localStorage.removeItem('nemhemai_dashboard_cache');
             dashboardCache.current = {};
@@ -219,8 +221,8 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
         }
     };
 
-    const fetchPhase1 = async (id: string, state_filter?: string | null) => {
-        const cacheKey = `${id}_${state_filter || 'national'}`;
+    const fetchPhase1 = async (id: string, state_filter?: string | null, city_filter?: string | null) => {
+        const cacheKey = `${id}_${state_filter || 'national'}_${city_filter || 'none'}`;
         if (dashboardCache.current[cacheKey]) {
             setCards(dashboardCache.current[cacheKey].cards);
             setKpis(dashboardCache.current[cacheKey].kpis);
@@ -233,8 +235,9 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
         try {
             const payload: any = { dataset_id: id };
             if (state_filter) payload.state_filter = state_filter;
+            if (city_filter) payload.city_filter = city_filter;
             
-            const data = await apiFetch<{ charts: ChartCard[]; kpis: KPI[] }>('/analytics/auto-charts', {
+            const data = await apiFetch<{ charts: ChartCard[]; kpis: KPI[] }>('/api/analytics/auto-charts', {
                 method: 'POST',
                 body: JSON.stringify(payload),
             });
@@ -246,7 +249,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             persistCache();
 
             // Kick off Phase 2 streaming after Phase 1 arrives
-            startPhase2Stream(id, state_filter);
+            startPhase2Stream(id, state_filter, city_filter);
         } catch (err) {
             console.error('Phase 1 failed', err);
             throw err;
@@ -256,7 +259,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
     };
 
     // ── PHASE 2: Complex Charts via SSE ──────────────────────────────────────
-    const startPhase2Stream = async (id: string, state_filter?: string | null) => {
+    const startPhase2Stream = async (id: string, state_filter?: string | null, city_filter?: string | null) => {
         console.log("startPhase2Stream TRIGGERED for dataset:", id);
         setIsPhase2Streaming(true);
         setStreamProgress(0);
@@ -271,6 +274,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             console.log("Calling fetch to Phase 2 stream endpoint...");
             let url = `http://localhost:8000/api/analytics/auto-charts/stream?dataset_id=${id}`;
             if (state_filter) url += `&state_filter=${encodeURIComponent(state_filter)}`;
+            if (city_filter) url += `&city_filter=${encodeURIComponent(city_filter)}`;
             
             const res = await fetch(url, {
                 method: 'GET',
@@ -316,7 +320,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                             if (payload.kpi) {
                                 setKpis(prev => {
                                     const next = [...prev, payload.kpi];
-                                    const cacheKey = `${id}_${state_filter || 'national'}`;
+                                    const cacheKey = `${id}_${state_filter || 'national'}_${city_filter || 'none'}`;
                                     if (!dashboardCache.current[cacheKey]) dashboardCache.current[cacheKey] = { cards: [], kpis: [] };
                                     dashboardCache.current[cacheKey].kpis = next;
                                     persistCache();
@@ -329,7 +333,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                 setCards(prev => {
                                     if (prev.find(c => c.id === newCard.id)) return prev;
                                     const next = [...prev, newCard];
-                                    const cacheKey = `${id}_${state_filter || 'national'}`;
+                                    const cacheKey = `${id}_${state_filter || 'national'}_${city_filter || 'none'}`;
                                     if (!dashboardCache.current[cacheKey]) dashboardCache.current[cacheKey] = { cards: [], kpis: [] };
                                     dashboardCache.current[cacheKey].cards = next;
                                     persistCache();
@@ -368,7 +372,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
         try {
             const res = await apiFetch(`/api/analytics/custom-chart`, {
                 method: 'POST',
-                body: JSON.stringify({ dataset_id: datasetId, prompt: customPrompt, state_filter: selectedState })
+                body: JSON.stringify({ dataset_id: datasetId, prompt: customPrompt, state_filter: selectedState, city_filter: selectedCity })
             });
             if (res.error) throw new Error(res.error);
 
@@ -448,7 +452,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                     </div>
                     <div>
                         <div style={{ fontWeight: 700, fontSize: 15, background: 'linear-gradient(90deg,#34d399,#22d3ee)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                            AI Analytics Dashboard
+                            {selectedCity ? `${selectedCity}, ${selectedState} Insights` : selectedState ? `${selectedState} Insights` : 'AI Analytics Dashboard'}
                         </div>
                         <div style={{ fontSize: 11, color: '#475569' }}>Hybrid Dual-Model · 10 Charts</div>
                     </div>
@@ -481,11 +485,23 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     {datasetId && (
                         <>
-                            {selectedState && (
-                                <button className="action-btn" onClick={() => { setSelectedState(null); fetchPhase1(datasetId, null); }}
+                            {selectedState && !selectedCity && (
+                                <button className="action-btn" onClick={() => { setSelectedState(null); setSelectedCity(null); fetchPhase1(datasetId, null, null); }}
                                     style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)', color: '#f59e0b', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
                                     🔙 Back to National
                                 </button>
+                            )}
+                            {selectedState && selectedCity && (
+                                <>
+                                    <button className="action-btn" onClick={() => { setSelectedState(null); setSelectedCity(null); fetchPhase1(datasetId, null, null); }}
+                                        style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)', color: '#f59e0b', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                        🔙 Back to National
+                                    </button>
+                                    <button className="action-btn" onClick={() => { setSelectedCity(null); fetchPhase1(datasetId, selectedState, null); }}
+                                        style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(52,211,153,0.15)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                        🔙 Back to {selectedState}
+                                    </button>
+                                </>
                             )}
                             <label className="action-btn"
                                 style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 9, background: 'rgba(52,211,153,0.15)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
@@ -643,7 +659,12 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                                         if (mapType === 'India') {
                                                             setSelectedState(params.name);
                                                             if (datasetId) {
-                                                                fetchPhase1(datasetId, params.name);
+                                                                fetchPhase1(datasetId, params.name, null);
+                                                            }
+                                                        } else {
+                                                            setSelectedCity(params.name);
+                                                            if (datasetId) {
+                                                                fetchPhase1(datasetId, selectedState, params.name);
                                                             }
                                                         }
                                                     }
@@ -704,7 +725,13 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                                         setSelectedState(params.name);
                                         setExpandedChart(null);
                                         if (datasetId) {
-                                            fetchPhase1(datasetId, params.name);
+                                            fetchPhase1(datasetId, params.name, null);
+                                        }
+                                    } else {
+                                        setSelectedCity(params.name);
+                                        setExpandedChart(null);
+                                        if (datasetId) {
+                                            fetchPhase1(datasetId, selectedState, params.name);
                                         }
                                     }
                                 }

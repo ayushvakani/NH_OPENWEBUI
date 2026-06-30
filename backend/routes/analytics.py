@@ -208,6 +208,31 @@ async def detect_geo(payload: Dict[str,Any]):
     if not did or did not in dataset_cache: raise HTTPException(404,"Dataset not found")
     return check_geo(did)
 
+def apply_filters(df, did: str, state_filter: str = None, city_filter: str = None):
+    if state_filter:
+        geo_info = check_geo(did)
+        if geo_info.get("geo_type") == "state" and geo_info.get("geo_column"):
+            col = geo_info["geo_column"]
+            df = df[df[col].astype(str).str.contains(state_filter, case=False, na=False)]
+            
+    if city_filter:
+        cache = dataset_cache[did]
+        city_col = None
+        # Priority 1: Match by column name
+        for c in cache["columns"]:
+            if c["dtype"] in ("text", "categorical") and re.search(r'(?i)region|city|district', c["name"]):
+                city_col = c["name"]
+                break
+        # Priority 2: Match by data presence
+        if not city_col:
+            for c in cache["columns"]:
+                if c["dtype"] in ("text", "categorical") and df[c["name"]].astype(str).str.contains(city_filter, case=False, na=False).any():
+                    city_col = c["name"]
+                    break
+        if city_col:
+            df = df[df[city_col].astype(str).str.contains(city_filter, case=False, na=False)]
+    return df
+
 # ─── PHASE 1: Instant Python charts ──────────────────────────────────────────
 @router.post("/auto-charts")
 async def auto_charts(payload: Dict[str,Any]):
@@ -218,13 +243,8 @@ async def auto_charts(payload: Dict[str,Any]):
     df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
     
     state_filter = payload.get("state_filter")
-    if state_filter:
-        geo_info = check_geo(did)
-        if geo_info.get("geo_type") == "state" and geo_info.get("geo_column"):
-            col = geo_info["geo_column"]
-            df = df[df[col].astype(str).str.contains(state_filter, case=False, na=False)]
-            # If filtering left us with no data, we could return early, but let it proceed and return empty charts
-            
+    city_filter = payload.get("city_filter")
+    df = apply_filters(df, did, state_filter, city_filter)
     kpis   = build_kpis(cache, df)
     charts = []
     cat1   = best_cat(cache, df)
@@ -351,7 +371,7 @@ def parse_llm_output(raw: str) -> list:
         return []
 
 @router.get("/auto-charts/stream")
-async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None):
+async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None, city_filter: Optional[str] = None):
     """Phase 2: LLM generates 10 complex charts, trickled one-by-one via SSE."""
     if not dataset_id or dataset_id not in dataset_cache:
         raise HTTPException(404, "Dataset not found")
@@ -360,8 +380,8 @@ async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None
     async def generate():
         print(f"[Phase-2] Stream generator started for dataset {dataset_id}", flush=True)
         
-        # Don't serve from cache if there's a state_filter active, as we need fresh charts
-        if not state_filter and "phase2_charts" in cache and cache.get("phase2_done"):
+        # Don't serve from cache if there's a state_filter or city_filter active, as we need fresh charts
+        if not state_filter and not city_filter and "phase2_charts" in cache and cache.get("phase2_done"):
             print("[Phase-2] Serving from cache!", flush=True)
             for item in cache["phase2_charts"]:
                 yield f"data: {json.dumps(jsonable_encoder(item))}\n\n"
@@ -375,16 +395,18 @@ async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None
             df = (pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv")
                   else pd.read_excel(cache["file_path"]))
                   
-            if state_filter:
-                geo_info = check_geo(dataset_id)
-                if geo_info.get("geo_type") == "state" and geo_info.get("geo_column"):
-                    col = geo_info["geo_column"]
-                    df = df[df[col].astype(str).str.contains(state_filter, case=False, na=False)]
+            df = apply_filters(df, dataset_id, state_filter, city_filter)
 
             stext = schema_text(cache, df)
             
             # Dynamically adjust the map rule based on if we are drilling down into a state
-            if state_filter:
+            if city_filter:
+                modified_prompt = RECIPE_PROMPT.replace(
+                    "The x_column for \"map\" MUST strictly be a State/Province column (DO NOT use Country, Region, or City columns) to properly color individual states on a national map.",
+                    f"Since we are filtered down to a specific city/region ({city_filter} in {state_filter}):\n- DO NOT GENERATE ANY 'map' CHARTS. They will not render correctly at this microscopic level.\n- Focus heavily on deep product insights: break down metrics by Product Category, Subcategory, Segments, and time-series trends using bar, pie, and funnel charts."
+                )
+                prompt = modified_prompt.format(schema=stext)
+            elif state_filter:
                 modified_prompt = RECIPE_PROMPT.replace(
                     "The x_column for \"map\" MUST strictly be a State/Province column (DO NOT use Country, Region, or City columns) to properly color individual states on a national map.",
                     f"Since we are filtered to {state_filter}:\n- For the 'map' chart ONLY, the x_column MUST be a 'City' or 'District' column so ECharts can match exact map geometry (e.g., 'Pune', 'Surat'). DO NOT use 'Region' for the map.\n- For ALL OTHER 9 charts, you MUST strictly use the 'Region' column as the x_column to break down the data by region!"
@@ -593,9 +615,12 @@ async def state_detail(payload: Dict[str,Any]):
 @router.post("/prompt")
 async def handle_prompt(payload: Dict[str,Any]):
     did = payload.get("dataset_id"); prompt_text = payload.get("prompt","")
+    state_filter = payload.get("state_filter")
+    city_filter = payload.get("city_filter")
     if not did or did not in dataset_cache: raise HTTPException(404,"Dataset not found")
     cache = dataset_cache[did]
     df = pd.read_csv(cache["file_path"]) if cache["file_path"].endswith(".csv") else pd.read_excel(cache["file_path"])
+    df = apply_filters(df, did, state_filter, city_filter)
     stext = schema_text(cache, df)
     
     full_prompt = f"""You are a data visualization expert. Generate ONE chart recipe for this request.

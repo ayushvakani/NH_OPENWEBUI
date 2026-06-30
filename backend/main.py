@@ -637,7 +637,7 @@ class RegisterRequest(PydanticBaseModel):
 app = FastAPI()
 
 from routes.analytics import router as analytics_router
-app.include_router(analytics_router, prefix="/analytics", tags=["analytics"])
+app.include_router(analytics_router, prefix="/api/analytics", tags=["analytics"])
 # Add a set of allowed model names from ollama list
 ALLOWED_OLLAMA_MODELS = {
     'anindya/prem1b-sql-ollama-fp116:latest',
@@ -3353,9 +3353,7 @@ async def get_sales_dashboard(current_user: dict = Depends(get_current_user)):
             "error": str(e)
         }
 
-# Mount Data Analytics router
-from routes.analytics import router as analytics_router
-app.include_router(analytics_router, prefix="/api/analytics")
+# Removed duplicate Data Analytics router mount
 
 if __name__ == "__main__":
     import uvicorn
