@@ -124,14 +124,53 @@ def best_num(cache, df, exclude=None):
 
 def build_kpis(cache, df):
     kpis, icons = [], ["📊","📈","🔢","💡"]
+    
+    date_cols = [c["name"] for c in cache.get("columns", []) if c.get("dtype") == "datetime"]
+    date_col = date_cols[0] if date_cols else None
+    
+    recent_mask = None
+    prev_mask = None
+    if date_col and date_col in df.columns:
+        if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+            try:
+                df[date_col] = pd.to_datetime(df[date_col], coerce=True, dayfirst=True)
+            except:
+                pass
+        
+        if pd.api.types.is_datetime64_any_dtype(df[date_col]):
+            max_date = df[date_col].max()
+            if pd.notnull(max_date):
+                recent_start = max_date - pd.Timedelta(days=30)
+                prev_start = recent_start - pd.Timedelta(days=30)
+                recent_mask = (df[date_col] > recent_start) & (df[date_col] <= max_date)
+                prev_mask = (df[date_col] > prev_start) & (df[date_col] <= recent_start)
+
     for i, c in enumerate([c for c in cache["columns"] if c["dtype"]=="numeric"][:4]):
         col = c["name"]
         val = float(df[col].sum())
         mean = float(df[col].mean())
+        
+        trend = None
+        trend_color = None
+        if recent_mask is not None and prev_mask is not None:
+            recent_val = float(df.loc[recent_mask, col].sum())
+            prev_val = float(df.loc[prev_mask, col].sum())
+            
+            if prev_val > 0:
+                pct = ((recent_val - prev_val) / prev_val) * 100
+                trend_color = "green" if pct >= 0 else "red"
+                trend_icon = "▲" if pct >= 0 else "▼"
+                trend = f"{trend_icon} {abs(pct):.1f}% vs last 30d"
+            elif prev_val == 0 and recent_val > 0:
+                trend_color = "green"
+                trend = "▲ 100% vs last 30d"
+
         kpis.append({
             "label": col, "icon": icons[i], "color": ["blue","green","amber","purple"][i],
             "value": f"{val:,.0f}" if val == int(val) else f"{val:,.2f}",
-            "sub": f"Avg {mean:,.2f} · {df[col].count():,} rows"
+            "sub": f"Avg {mean:,.2f} · {df[col].count():,} rows",
+            "trend": trend,
+            "trend_color": trend_color
         })
     return kpis
 

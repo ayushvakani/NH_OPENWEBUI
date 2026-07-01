@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, BarChart2, Plus, UploadCloud, Cpu, Zap, Maximize2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import html2pdf from 'html2pdf.js';
+import CountUp from 'react-countup';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -436,6 +437,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                 const newCards = prev.map(c => c.id === card.id ? { ...data.chart, phase: c.phase, id: c.id } : c);
                 // Also update cache using a timeout to ensure state is updated
                 setTimeout(() => {
+                    const cacheKey = `${datasetId}_${selectedState || 'national'}_${selectedCity || 'none'}`;
                     dashboardCache.current[cacheKey] = { cards: newCards, kpis };
                     persistCache();
                 }, 0);
@@ -596,13 +598,9 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                         <div style={{ padding: '50px 70px', background: 'rgba(15,23,42,0.6)', border: '1px dashed rgba(52,211,153,0.4)', borderRadius: 28, textAlign: 'center', maxWidth: 480 }}>
                             <UploadCloud size={52} color="#34d399" style={{ marginBottom: 18 }} />
                             <h2 style={{ fontSize: 24, margin: '0 0 8px', color: '#f8fafc' }}>Upload Dataset</h2>
-                            <p style={{ fontSize: 14, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
-                                Drop a CSV or Excel file. Our <span style={{ color: '#34d399', fontWeight: 600 }}>Hybrid AI Engine</span> will instantly generate 3 fast charts, then stream 10 complex ones as they're analyzed by a 7B coding model.
+                            <p style={{ fontSize: 14, color: '#94a3b8', margin: '0 0 20px', lineHeight: 1.6 }}>
+                                Upload CSV and Excel
                             </p>
-                            <div style={{ display: 'flex', justifyContent: 'center', gap: 20, margin: '20px 0', fontSize: 12, color: '#475569' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Zap size={12} color="#f59e0b" /> <span>Phase 1: qwen3.5:0.8b → 3 charts</span></div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Cpu size={12} color="#34d399" /> <span>Phase 2: qwen2.5-coder:7b → 10 charts</span></div>
-                            </div>
                             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '11px 28px', background: 'linear-gradient(135deg,#34d399,#22d3ee)', color: '#071019', fontWeight: 700, borderRadius: 14, cursor: 'pointer', fontSize: 14 }}>
                                 Browse File
                                 <input type="file" accept=".csv,.xlsx,.xls" onChange={handleFileUpload} style={{ display: 'none' }} />
@@ -626,9 +624,24 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                             <div key={i} style={{ background: 'rgba(15,23,42,0.8)', border: '1px solid rgba(52,211,153,0.15)', borderRadius: 14, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, animation: 'fadeUp 0.3s ease both', animationDelay: `${i * 50}ms` }}>
                                 <div style={{ fontSize: 28, lineHeight: 1 }}>{kpi.icon}</div>
                                 <div>
-                                    <div style={{ fontSize: 22, fontWeight: 700, color: '#34d399', lineHeight: 1 }}>{kpi.value}</div>
+                                    <div style={{ fontSize: 22, fontWeight: 700, color: '#34d399', lineHeight: 1 }}>
+                                        <CountUp 
+                                            start={0} 
+                                            end={parseFloat(kpi.value.replace(/,/g, ''))} 
+                                            duration={2} 
+                                            separator="," 
+                                            decimals={kpi.value.includes('.') ? 2 : 0} 
+                                        />
+                                    </div>
                                     <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>{kpi.label}</div>
-                                    <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>{kpi.sub}</div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                                        <div style={{ fontSize: 10, color: '#475569' }}>{kpi.sub}</div>
+                                        {kpi.trend && (
+                                            <div style={{ fontSize: 10, fontWeight: 600, color: kpi.trend_color === 'red' ? '#ef4444' : '#10b981', background: kpi.trend_color === 'red' ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)', padding: '2px 6px', borderRadius: 4 }}>
+                                                {kpi.trend}
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                         ))}
