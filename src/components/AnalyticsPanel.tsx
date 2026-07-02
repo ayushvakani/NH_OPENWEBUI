@@ -3,6 +3,7 @@ import { X, BarChart2, Plus, UploadCloud, Cpu, Zap, Maximize2 } from 'lucide-rea
 import { apiFetch } from '@/lib/api';
 import html2pdf from 'html2pdf.js';
 import CountUp from 'react-countup';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -154,6 +155,11 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
     const [cards, setCards] = useState<ChartCard[]>([]);
     const [kpis, setKpis] = useState<KPI[]>([]);
     const [expandedChart, setExpandedChart] = useState<ChartCard | null>(null);
+    
+    // KPI Drill-Down State
+    const [selectedKpi, setSelectedKpi] = useState<string | null>(null);
+    const [drilldownCharts, setDrilldownCharts] = useState<ChartCard[]>([]);
+    const [isDrilldownLoading, setIsDrilldownLoading] = useState(false);
 
     // Streaming state
     const [isPhase1Loading, setIsPhase1Loading] = useState(false);
@@ -200,6 +206,26 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
 
     // Cleanup fetch on unmount
     useEffect(() => () => { abortControllerRef.current?.abort(); }, []);
+
+    const handleKpiClick = async (metric: string) => {
+        if (!datasetId) return;
+        setSelectedKpi(metric);
+        setIsDrilldownLoading(true);
+        setDrilldownCharts([]);
+        try {
+            const data = await apiFetch<{charts: ChartCard[]}>('/api/analytics/kpi-drilldown', {
+                method: 'POST',
+                body: JSON.stringify({ dataset_id: datasetId, metric })
+            });
+            if (data.charts) {
+                setDrilldownCharts(data.charts);
+            }
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setIsDrilldownLoading(false);
+        }
+    };
 
     // ── PHASE 1: Upload + Fast Charts ────────────────────────────────────────
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -383,7 +409,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             });
             if (res.error) throw new Error(res.error);
 
-            setCards(prev => prev.map(c => c.id === cid ? { ...c, ...res.data, id: res.data.id || cid, loading: false } : c));
+            setCards(prev => prev.map(c => c.id === cid ? { ...c, ...res.chart, id: res.chart?.id || cid, loading: false } : c));
         } catch (err: any) {
             setCards(prev => prev.map(c => c.id === cid ? { ...c, error: err.message || 'Failed to generate', loading: false } : c));
         } finally {
@@ -458,7 +484,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
 
     return (
         <div style={{
-            position: 'fixed', inset: 0, zIndex: 9999,
+            position: 'fixed', inset: 0, zIndex: 40,
             background: '#070d1a',
             display: 'flex', flexDirection: 'column',
             fontFamily: 'Inter, system-ui, sans-serif',
@@ -491,9 +517,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
             }}>
                 {/* Left: brand */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#34d399,#22d3ee)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <BarChart2 size={18} color="#071019" />
-                    </div>
+                    <img src="/nemhem-logo.svg" alt="Nemhem Logo" style={{ height: 36, objectFit: 'contain' }} />
                     <div>
                         <div style={{ fontWeight: 700, fontSize: 15, background: 'linear-gradient(90deg,#34d399,#22d3ee)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
                             {selectedCity ? `${selectedCity}, ${selectedState} Insights` : selectedState ? `${selectedState} Insights` : 'AI Analytics Dashboard'}
@@ -621,7 +645,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                 {datasetId && kpis.length > 0 && (
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 14 }}>
                         {kpis.map((kpi, i) => (
-                            <div key={i} style={{ background: 'rgba(15,23,42,0.8)', border: '1px solid rgba(52,211,153,0.15)', borderRadius: 14, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, animation: 'fadeUp 0.3s ease both', animationDelay: `${i * 50}ms` }}>
+                            <div key={i} onClick={() => handleKpiClick(kpi.label)} style={{ background: 'rgba(15,23,42,0.8)', border: '1px solid rgba(52,211,153,0.15)', borderRadius: 14, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, animation: 'fadeUp 0.3s ease both', animationDelay: `${i * 50}ms`, cursor: 'pointer', transition: 'all 0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 25px -5px rgba(0,0,0,0.5), 0 0 15px rgba(52,211,153,0.3)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}>
                                 <div style={{ fontSize: 28, lineHeight: 1 }}>{kpi.icon}</div>
                                 <div>
                                     <div style={{ fontSize: 22, fontWeight: 700, color: '#34d399', lineHeight: 1 }}>
@@ -806,6 +830,42 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                     </div>
                 </div>
             )}
+
+            {/* KPI Drill-Down Modal */}
+            <Dialog open={!!selectedKpi} onOpenChange={(o) => !o && setSelectedKpi(null)}>
+                <DialogContent aria-describedby={undefined} style={{ background: '#0f172a', border: '1px solid #1e293b', color: 'white', maxWidth: '80vw', width: '900px' }}>
+                    <DialogHeader>
+                        <DialogTitle style={{ color: '#f8fafc', fontSize: 20 }}>{selectedKpi} Deep Dive</DialogTitle>
+                    </DialogHeader>
+                    
+                    <div style={{ minHeight: 400, padding: '20px 0' }}>
+                        {isDrilldownLoading ? (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 400 }}>
+                                <div style={{ color: '#34d399', display: 'flex', alignItems: 'center', gap: 10 }}>
+                                    <div className="animate-spin h-5 w-5 border-2 border-current border-t-transparent rounded-full" />
+                                    Analyzing {selectedKpi}...
+                                </div>
+                            </div>
+                        ) : drilldownCharts.length > 0 ? (
+                            <div style={{ display: 'grid', gridTemplateColumns: drilldownCharts.length > 1 ? '1fr 1fr' : '1fr', gap: 20 }}>
+                                {drilldownCharts.map((ch) => (
+                                    <div key={ch.id} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid #1e293b', borderRadius: 12, padding: 16 }}>
+                                        <div style={{ fontSize: 14, fontWeight: 500, color: '#f8fafc', marginBottom: 12 }}>{ch.title}</div>
+                                        <div style={{ height: 320 }}>
+                                            <EChart option={ch.chart_config} />
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 400, color: '#94a3b8' }}>
+                                No deep dive data available for {selectedKpi}.
+                            </div>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
+
         </div>
     );
 }

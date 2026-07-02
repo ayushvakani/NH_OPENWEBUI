@@ -404,7 +404,7 @@ async def auto_charts(payload: Dict[str,Any]):
 
 # ─── PHASE 2: LLM Batch→Trickle SSE ─────────────────────────────────────────
 RECIPE_PROMPT = """You are a Data Visualization Expert.
-Analyze the schema below and generate a JSON array of exactly 10 chart "recipes".
+Analyze the schema below and generate a JSON array of exactly 13 chart "recipes".
 We will use these recipes to aggregate the actual data in Python.
 
 DATASET SCHEMA:
@@ -414,8 +414,8 @@ RULES:
 1. Output ONLY a valid JSON array of objects. NO markdown formatting, NO explanations. Start directly with [
 2. Each recipe MUST have this exact structure:
    {{"title": "Descriptive Title", "type": "funnel", "x_column": "Exact_Column_Name", "y_column": "Exact_Column_Name", "aggregation": "sum"}}
-3. Your JSON array MUST contain EXACTLY 10 objects.
-4. Each object MUST use a DIFFERENT "type" from this exact list: ["map", "gauge", "area", "line", "pie", "horizontalBar", "kpi", "scatter", "histogram", "funnel"]. You must use ALL 10 types exactly once.
+3. Your JSON array MUST contain EXACTLY 13 objects.
+4. Each object MUST use a DIFFERENT "type" from this exact list: ["map", "gauge", "area", "line", "pie", "horizontalBar", "kpi", "scatter", "histogram", "funnel", "dualLine", "heatmap", "stackedArea"]. You must use ALL 13 types exactly once.
 5. For "map", include an extra key "map_region" (either "world" or "India"). The x_column for "map" MUST strictly be a State/Province column (DO NOT use Country, Region, or City columns) to properly color individual states on a national map.
 6. Valid "aggregation" values: sum, avg, count
 7. Use REAL column names from the schema. Check spelling carefully.
@@ -534,26 +534,49 @@ async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None
                                     agg_type = recipe.get("aggregation", "sum")
                                     title = recipe.get("title", f"Chart {recipe_index}")
                                     
-                                    if not x_col or not y_col: continue
+                                    # Heatmap doesn't strictly need x/y cols from LLM
+                                    if ch_type != "heatmap":
+                                        col_map = {str(c).lower(): str(c) for c in df.columns}
+                                        x_col = col_map.get(str(x_col).lower()) if x_col else None
+                                        y_col = col_map.get(str(y_col).lower()) if y_col else None
                                         
-                                    col_map = {str(c).lower(): str(c) for c in df.columns}
-                                    x_col = col_map.get(str(x_col).lower())
-                                    y_col = col_map.get(str(y_col).lower())
-                                    
-                                    if not x_col or not y_col: continue
+                                        if not x_col or not y_col:
+                                            # fallback to valid columns if missing
+                                            x_col = df.columns[0]
+                                            num_cols = df.select_dtypes(include='number').columns
+                                            y_col = num_cols[0] if len(num_cols) > 0 else df.columns[0]
+                                    else:
+                                        # Provide dummy columns for heatmap so it passes any downstream checks
+                                        x_col = df.columns[0]
+                                        y_col = df.columns[0]
                                         
                                     try:
-                                        if agg_type == "sum":
-                                            agg = df.groupby(x_col)[y_col].sum().nlargest(10).reset_index()
-                                        elif agg_type in ["avg", "mean"]:
-                                            agg = df.groupby(x_col)[y_col].mean().nlargest(10).reset_index()
+                                        if ch_type == "heatmap":
+                                            num_df = df.select_dtypes(include='number')
+                                            corr = num_df.corr().round(2)
+                                            cols = corr.columns.tolist()
+                                            heatmap_data = [[i, j, float(corr.iloc[i, j])] for i in range(len(cols)) for j in range(len(cols))]
+                                            x_data, y_data = cols, []
                                         else:
-                                            agg = df.groupby(x_col)[y_col].count().nlargest(10).reset_index()
+                                            if agg_type == "sum":
+                                                grouped = df.groupby(x_col)[y_col].sum()
+                                            elif agg_type in ["avg", "mean"]:
+                                                grouped = df.groupby(x_col)[y_col].mean()
+                                            else:
+                                                grouped = df.groupby(x_col)[y_col].count()
+                                            import pandas as pd
+                                            grouped = pd.to_numeric(grouped, errors='coerce').fillna(0)
+                                            agg = grouped.nlargest(10).reset_index()
+                                                
+                                            x_data = agg[x_col].astype(str).tolist()
+                                            if ch_type != "map":
+                                                x_data = format_labels(x_data)
+                                            y_data = [round(float(v), 2) for v in agg[y_col].tolist()]
                                             
-                                        x_data = agg[x_col].astype(str).tolist()
-                                        if ch_type != "map":
-                                            x_data = format_labels(x_data)
-                                        y_data = [round(float(v), 2) for v in agg[y_col].tolist()]
+                                        if len(x_data) == 0:
+                                            continue
+                                        if len(x_data) < 2 and ch_type in ["line", "dualLine", "stackedArea", "area"]:
+                                            continue
                                         
                                         if ch_type == "kpi":
                                             val = agg[y_col].sum() if agg_type == "sum" else (agg[y_col].mean() if agg_type in ["avg","mean"] else agg[y_col].count())
@@ -583,14 +606,30 @@ async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None
                                             }
                                         elif ch_type == "gauge":
                                             val = round(agg[y_col].mean(), 2) if agg_type in ["avg", "mean"] else round(agg[y_col].sum(), 2)
+                                            raw_max = max(val * 1.5, 100)
+                                            import math
+                                            order = 10 ** math.floor(math.log10(raw_max))
+                                            max_val = int(math.ceil(raw_max / order) * order)
                                             chart_config = {
                                                 "series": [{
                                                     "type": "gauge",
-                                                    "max": max(val * 1.5, 100),
-                                                    "axisLabel": {"show": False},
-                                                    "data": [{"value": val, "name": ""}],
-                                                    "progress": {"show": True}, 
-                                                    "detail": {"valueAnimation": True, "formatter": "{value}", "fontSize": 24, "offsetCenter": [0, "40%"]}
+                                                    "max": max_val,
+                                                    "axisLabel": {
+                                                        "show": True,
+                                                        "color": "#94a3b8",
+                                                        "distance": 15,
+                                                        "fontSize": 10
+                                                    },
+                                                    "axisLine": {
+                                                        "lineStyle": {
+                                                            "width": 10,
+                                                            "color": [[0.3, "#f87171"], [0.7, "#fbbf24"], [1, "#34d399"]]
+                                                        }
+                                                    },
+                                                    "data": [{"value": val, "name": str(y_col)}],
+                                                    "progress": {"show": False}, 
+                                                    "detail": {"valueAnimation": True, "formatter": "{value}", "fontSize": 24, "color": "#f8fafc", "offsetCenter": [0, "60%"]},
+                                                    "title": {"show": True, "fontSize": 12, "color": "#94a3b8", "offsetCenter": [0, "30%"]}
                                                 }]
                                             }
                                         elif ch_type == "horizontalBar":
@@ -621,6 +660,87 @@ async def auto_charts_stream(dataset_id: str, state_filter: Optional[str] = None
                                             chart_config = {
                                                 "series": [{"type": "funnel", "data": [{"name": str(x), "value": y} for x, y in zip(x_data, y_data)], "label": {"position": "inside", "color": "#0f172a", "fontWeight": "bold"}}]
                                             }
+                                        elif ch_type == "heatmap":
+                                            chart_config = {
+                                                "tooltip": {"position": "top"},
+                                                "grid": {"height": "70%", "top": "10%", "bottom": "15%", "left": "15%"},
+                                                "xAxis": {"type": "category", "data": cols, "splitArea": {"show": True}},
+                                                "yAxis": {"type": "category", "data": cols, "splitArea": {"show": True}},
+                                                "visualMap": {"min": -1, "max": 1, "calculable": True, "orient": "horizontal", "left": "center", "bottom": "0%"},
+                                                "series": [{"name": "Correlation", "type": "heatmap", "data": heatmap_data, "label": {"show": True}}]
+                                            }
+                                        elif ch_type == "dualLine":
+                                            num_cols = df.select_dtypes(include='number').columns.tolist()
+                                            y_col2 = [c for c in num_cols if c != y_col]
+                                            y_col2 = y_col2[0] if y_col2 else None
+                                            
+                                            if not y_col2:
+                                                grouped_dual = df.groupby(x_col)[y_col].sum()
+                                                grouped_dual = pd.to_numeric(grouped_dual, errors='coerce').fillna(0)
+                                                agg_dual = grouped_dual.nlargest(10).reset_index()
+                                                x_dual = format_labels(agg_dual[x_col].astype(str).tolist())
+                                                y1_dual = [round(float(v), 2) for v in agg_dual[y_col].tolist()]
+                                                y2_dual = y1_dual.copy()
+                                                y_col2 = f"{y_col} (copy)"
+                                            else:
+                                                grouped_dual = df.groupby(x_col)[[y_col, y_col2]].sum()
+                                                for col in [y_col, y_col2]:
+                                                    grouped_dual[col] = pd.to_numeric(grouped_dual[col], errors='coerce').fillna(0)
+                                                agg_dual = grouped_dual.nlargest(10, y_col).reset_index()
+                                                x_dual = format_labels(agg_dual[x_col].astype(str).tolist())
+                                                y1_dual = [round(float(v), 2) for v in agg_dual[y_col].tolist()]
+                                                y2_dual = [round(float(v), 2) for v in agg_dual[y_col2].tolist()]
+                                            
+                                            chart_config = {
+                                                "tooltip": {"trigger": "axis"},
+                                                "legend": {"data": [y_col, y_col2], "textStyle": {"color": "#94a3b8"}},
+                                                "xAxis": {"type": "category", "data": x_dual},
+                                                "yAxis": [
+                                                    {"type": "value", "name": y_col, "nameTextStyle": {"color": "#94a3b8"}},
+                                                    {"type": "value", "name": y_col2, "nameTextStyle": {"color": "#94a3b8"}, "splitLine": {"show": False}}
+                                                ],
+                                                "series": [
+                                                    {"name": y_col, "type": "line", "data": y1_dual},
+                                                    {"name": y_col2, "type": "line", "yAxisIndex": 1, "data": y2_dual}
+                                                ]
+                                            }
+                                        elif ch_type == "stackedArea":
+                                            cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+                                            cat2 = [c for c in cat_cols if c != x_col]
+                                            
+                                            if cat2:
+                                                cat2 = cat2[0]
+                                                # get top 8 x_cols to avoid clutter
+                                                top_x = df.groupby(x_col)[y_col].sum().nlargest(8).index
+                                                df_sub = df[df[x_col].isin(top_x)]
+                                                pivot = df_sub.pivot_table(index=x_col, columns=cat2, values=y_col, aggfunc=agg_type).fillna(0)
+                                                
+                                                x_stacked = format_labels(pivot.index.astype(str).tolist())
+                                                series = []
+                                                for col in pivot.columns:
+                                                    series.append({
+                                                        "name": str(col),
+                                                        "type": "line",
+                                                        "stack": "Total",
+                                                        "areaStyle": {},
+                                                        "emphasis": {"focus": "series"},
+                                                        "data": [round(float(v), 2) for v in pivot[col].tolist()]
+                                                    })
+                                                    
+                                                chart_config = {
+                                                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross", "label": {"backgroundColor": "#6a7985"}}},
+                                                    "legend": {"data": [str(c) for c in pivot.columns], "textStyle": {"color": "#94a3b8"}, "type": "scroll", "width": "80%"},
+                                                    "xAxis": {"type": "category", "boundaryGap": False, "data": x_stacked},
+                                                    "yAxis": {"type": "value"},
+                                                    "series": series
+                                                }
+                                            else:
+                                                # Fallback to regular area
+                                                chart_config = {
+                                                    "xAxis": {"type": "category", "data": x_data},
+                                                    "yAxis": {"type": "value"},
+                                                    "series": [{"type": "line", "areaStyle": {}, "data": y_data}]
+                                                }
                                         else:
                                             chart_config = {
                                                 "xAxis": {"type": "category", "data": x_data},
@@ -696,8 +816,9 @@ async def state_detail(payload: Dict[str,Any]):
     return {"charts":charts,"kpis":kpis}
 
 # ─── Custom prompt ────────────────────────────────────────────────────────────
-@router.post("/prompt")
+@router.post("/custom-chart")
 async def handle_prompt(payload: Dict[str,Any]):
+    print(f"DEBUG: handle_prompt called with {payload}")
     did = payload.get("dataset_id"); prompt_text = payload.get("prompt","")
     state_filter = payload.get("state_filter")
     city_filter = payload.get("city_filter")
@@ -745,37 +866,135 @@ JSON ONLY:"""
         x_col = col_map.get(str(x_col).lower(), x_col)
         y_col = col_map.get(str(y_col).lower(), y_col)
         
-        if x_col not in df.columns or y_col not in df.columns:
-            raise ValueError("Invalid columns in recipe")
+        if ch_type != "heatmap" and (x_col not in df.columns or y_col not in df.columns):
+            # fallback to valid columns if missing
+            x_col = df.columns[0]
+            y_col = df.select_dtypes(include='number').columns[0]
             
         # Aggregate Data
-        df_clean = df.dropna(subset=[x_col, y_col])
-        if agg_type == "avg":
-            agg = df_clean.groupby(x_col)[y_col].mean().nlargest(15).reset_index()
-        elif agg_type == "count":
-            agg = df_clean.groupby(x_col)[y_col].count().nlargest(15).reset_index()
+        if ch_type == "heatmap":
+            num_df = df.select_dtypes(include='number')
+            corr = num_df.corr().round(2)
+            cols = corr.columns.tolist()
+            heatmap_data = [[i, j, float(corr.iloc[i, j])] for i in range(len(cols)) for j in range(len(cols))]
+            chart_config = {
+                "tooltip": {"position": "top"},
+                "grid": {"height": "70%", "top": "10%", "bottom": "15%", "left": "15%"},
+                "xAxis": {"type": "category", "data": cols, "splitArea": {"show": True}},
+                "yAxis": {"type": "category", "data": cols, "splitArea": {"show": True}},
+                "visualMap": {"min": -1, "max": 1, "calculable": True, "orient": "horizontal", "left": "center", "bottom": "0%"},
+                "series": [{"name": "Correlation", "type": "heatmap", "data": heatmap_data, "label": {"show": True}}]
+            }
         else:
-            agg = df_clean.groupby(x_col)[y_col].sum().nlargest(15).reset_index()
+            if agg_type == "avg":
+                grouped = df.groupby(x_col)[y_col].mean()
+            elif agg_type == "count":
+                grouped = df.groupby(x_col)[y_col].count()
+            else:
+                grouped = df.groupby(x_col)[y_col].sum()
             
-        x_data = agg[x_col].astype(str).tolist()
-        y_data = agg[y_col].tolist()
-        
-        if ch_type in ["pie", "funnel"]:
-            chart_config = {
-                "series": [{"type": ch_type, "data": [{"name": str(x), "value": y} for x, y in zip(x_data, y_data)], "label": {"position": "inside", "color": "#0f172a", "fontWeight": "bold"}}]
-            }
-        elif ch_type == "area":
-            chart_config = {
-                "xAxis": {"type": "category", "data": x_data},
-                "yAxis": {"type": "value"},
-                "series": [{"type": "line", "areaStyle": {}, "data": y_data}]
-            }
-        else:
-            chart_config = {
-                "xAxis": {"type": "category", "data": x_data},
-                "yAxis": {"type": "value"},
-                "series": [{"type": ch_type, "data": y_data}]
-            }
+            # Coerce to numeric in case y_col was a string and got concatenated
+            import pandas as pd
+            grouped = pd.to_numeric(grouped, errors='coerce').fillna(0)
+            agg = grouped.nlargest(15).reset_index()
+            x_data = agg[x_col].astype(str).tolist()
+            y_data = [round(float(v), 2) for v in agg[y_col].tolist()]
+            
+            if len(x_data) == 0:
+                raise ValueError("No data available to plot after filtering.")
+            
+            if len(x_data) < 2 and ch_type in ["line", "dualLine", "stackedArea", "area"]:
+                raise ValueError("Not enough data points to plot a meaningful line chart (at least 2 points required). Try a different chart type or grouping.")
+            
+            if ch_type in ["pie", "funnel"]:
+                chart_config = {
+                    "series": [{"type": ch_type, "data": [{"name": str(x), "value": y} for x, y in zip(x_data, y_data)], "label": {"position": "inside", "color": "#0f172a", "fontWeight": "bold"}}]
+                }
+            elif ch_type == "area":
+                chart_config = {
+                    "xAxis": {"type": "category", "data": x_data},
+                    "yAxis": {"type": "value"},
+                    "series": [{"type": "line", "areaStyle": {}, "data": y_data, "showSymbol": True, "symbolSize": 8}]
+                }
+            elif ch_type == "dualLine":
+                num_cols = df.select_dtypes(include='number').columns.tolist()
+                y_col2 = [c for c in num_cols if c != y_col]
+                y_col2 = y_col2[0] if y_col2 else None
+                
+                if not y_col2:
+                    # If there's only 1 numeric column, just duplicate the data to avoid duplicate column name issues in Pandas
+                    grouped_dual = df.groupby(x_col)[y_col].sum()
+                    grouped_dual = pd.to_numeric(grouped_dual, errors='coerce').fillna(0)
+                    agg_dual = grouped_dual.nlargest(15).reset_index()
+                    x_dual = agg_dual[x_col].astype(str).tolist()
+                    y1_dual = [round(float(v), 2) for v in agg_dual[y_col].tolist()]
+                    y2_dual = y1_dual.copy()
+                    y_col2 = f"{y_col} (copy)"
+                else:
+                    grouped_dual = df.groupby(x_col)[[y_col, y_col2]].sum()
+                    for col in [y_col, y_col2]:
+                        grouped_dual[col] = pd.to_numeric(grouped_dual[col], errors='coerce').fillna(0)
+                    agg_dual = grouped_dual.nlargest(15, y_col).reset_index()
+                    
+                    x_dual = agg_dual[x_col].astype(str).tolist()
+                    y1_dual = [round(float(v), 2) for v in agg_dual[y_col].tolist()]
+                    y2_dual = [round(float(v), 2) for v in agg_dual[y_col2].tolist()]
+                
+                
+                chart_config = {
+                    "tooltip": {"trigger": "axis"},
+                    "legend": {"data": [y_col, y_col2], "textStyle": {"color": "#94a3b8"}},
+                    "xAxis": {"type": "category", "data": x_dual},
+                    "yAxis": [
+                        {"type": "value", "name": y_col, "nameTextStyle": {"color": "#94a3b8"}},
+                        {"type": "value", "name": y_col2, "nameTextStyle": {"color": "#94a3b8"}, "splitLine": {"show": False}}
+                    ],
+                    "series": [
+                        {"name": y_col, "type": "line", "data": y1_dual, "showSymbol": True, "symbolSize": 8},
+                        {"name": y_col2, "type": "line", "yAxisIndex": 1, "data": y2_dual, "showSymbol": True, "symbolSize": 8}
+                    ]
+                }
+            elif ch_type == "stackedArea":
+                cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+                cat2 = [c for c in cat_cols if c != x_col]
+                if cat2:
+                    cat2 = cat2[0]
+                    grouped_stacked = df.groupby(x_col)[y_col].sum()
+                    grouped_stacked = pd.to_numeric(grouped_stacked, errors='coerce').fillna(0)
+                    top_x = grouped_stacked.nlargest(8).index
+                    df_sub = df[df[x_col].isin(top_x)]
+                    pivot = df_sub.pivot_table(index=x_col, columns=cat2, values=y_col, aggfunc=agg_type).fillna(0)
+                    
+                    x_stacked = pivot.index.astype(str).tolist()
+                    series = []
+                    for col in pivot.columns:
+                        series.append({
+                            "name": str(col),
+                            "type": "line",
+                            "stack": "Total",
+                            "areaStyle": {},
+                            "emphasis": {"focus": "series"},
+                            "data": [round(float(v), 2) for v in pivot[col].tolist()]
+                        })
+                    chart_config = {
+                        "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross", "label": {"backgroundColor": "#6a7985"}}},
+                        "legend": {"data": [str(c) for c in pivot.columns], "textStyle": {"color": "#94a3b8"}, "type": "scroll", "width": "80%"},
+                        "xAxis": {"type": "category", "boundaryGap": False, "data": x_stacked},
+                        "yAxis": {"type": "value"},
+                        "series": series
+                    }
+                else:
+                    chart_config = {
+                        "xAxis": {"type": "category", "data": x_data},
+                        "yAxis": {"type": "value"},
+                        "series": [{"type": "line", "areaStyle": {}, "data": y_data}]
+                    }
+            else:
+                chart_config = {
+                    "xAxis": {"type": "category", "data": x_data},
+                    "yAxis": {"type": "value"},
+                    "series": [{"type": ch_type, "data": y_data}]
+                }
             
         ch = {
             "id": f"c_{uuid.uuid4().hex[:6]}",
@@ -784,10 +1003,8 @@ JSON ONLY:"""
         }
         return {"chart": ch}
     except Exception as ex:
-        print(f"[Prompt] {ex}")
-        return {"chart":{"id":f"c_{uuid.uuid4().hex[:6]}","title":f"Query: {prompt_text}",
-            "chart_config":_base_style({"xAxis":{"type":"category","data":["A","B","C"]},
-                "yAxis":{"type":"value"},"series":[{"type":"bar","data":[10,20,15]}]},0)}}
+        print(f"[Prompt Error] {ex}")
+        raise HTTPException(400, str(ex))
 
 # ─── Reaggregate ─────────────────────────────────────────────────────────────
 @router.post("/reaggregate")
@@ -868,3 +1085,76 @@ async def reaggregate_chart(payload: Dict[str,Any]):
         "time_grain": time_grain
     }
     return {"chart": ch}
+
+
+# ─── KPI Drill-Down ───────────────────────────────────────────────────────────
+@router.post("/kpi-drilldown")
+async def kpi_drilldown(payload: Dict[str, Any]):
+    did = payload.get("dataset_id")
+    metric = payload.get("metric")
+    
+    if not did or did not in dataset_cache:
+        raise HTTPException(404, "Dataset not found")
+    if not metric:
+        raise HTTPException(400, "Missing metric")
+        
+    cache = dataset_cache[did]
+    df = load_df(cache)
+    
+    if metric not in df.columns:
+        raise HTTPException(400, f"Metric {metric} not found in dataset")
+        
+    # Find the best categorical column (avoiding date and the metric itself)
+    cat_col = best_cat(cache, df, exclude=metric)
+    
+    # Find date column
+    date_cols = [c["name"] for c in cache.get("columns", []) if c.get("dtype") == "datetime"]
+    date_col = date_cols[0] if date_cols else None
+    
+    charts = []
+    
+    if cat_col:
+        grouped = df.groupby(cat_col)[metric].sum()
+        grouped = pd.to_numeric(grouped, errors='coerce').fillna(0)
+        agg = grouped.nlargest(10).reset_index()
+        # Sort ascending for horizontal bar chart
+        agg = agg.sort_values(metric, ascending=True)
+        
+        y_data = agg[cat_col].astype(str).tolist()
+        x_data = [round(float(v), 2) for v in agg[metric].tolist()]
+        
+        charts.append(make_chart("drill_bar", f"Top 10 {cat_col} by {metric}", {
+            "grid": {"left": "2%", "right": "12%", "bottom": "3%", "top": "15%", "containLabel": True},
+            "xAxis": {"type": "value"},
+            "yAxis": {"type": "category", "data": y_data},
+            "series": [{"type": "bar", "data": x_data, "label": {"show": True, "position": "right", "color": "#cbd5e1"}}]
+        }, 1))
+        
+    if date_col and date_col in df.columns:
+        # Parse if not already parsed
+        if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+            try:
+                df[date_col] = pd.to_datetime(df[date_col], coerce=True, dayfirst=True)
+            except:
+                pass
+                
+        if pd.api.types.is_datetime64_any_dtype(df[date_col]):
+            df_date = df.dropna(subset=[date_col, metric]).copy()
+            # Group by month (YYYY-MM)
+            df_date['Month'] = df_date[date_col].dt.to_period('M')
+            time_agg = df_date.groupby('Month')[metric].sum().reset_index()
+            time_agg['Month'] = time_agg['Month'].astype(str)
+            # Sort by date
+            time_agg = time_agg.sort_values('Month')
+            
+            x_time = time_agg['Month'].tolist()
+            y_time = [round(float(v), 2) for v in time_agg[metric].tolist()]
+            
+            charts.append(make_chart("drill_line", f"{metric} Over Time", {
+                "grid": {"left": "3%", "right": "4%", "bottom": "15%", "top": "15%", "containLabel": True},
+                "xAxis": {"type": "category", "data": x_time},
+                "yAxis": {"type": "value"},
+                "series": [{"type": "line", "smooth": True, "areaStyle": {"opacity": 0.2}, "data": y_time}]
+            }, 2))
+            
+    return {"charts": charts}
