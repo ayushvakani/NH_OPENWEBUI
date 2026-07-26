@@ -522,7 +522,7 @@ export function AnalyticsPanel({ open, onClose }: AnalyticsPanelProps) {
                         <div style={{ fontWeight: 700, fontSize: 15, background: 'linear-gradient(90deg,#34d399,#22d3ee)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
                             {selectedCity ? `${selectedCity}, ${selectedState} Insights` : selectedState ? `${selectedState} Insights` : 'AI Analytics Dashboard'}
                         </div>
-                        <div style={{ fontSize: 11, color: '#475569' }}>Hybrid Dual-Model · 10 Charts</div>
+                        <div style={{ fontSize: 11, color: '#475569' }}><span style={{ fontWeight: 600 }}>Nemhem</span> · 10 Charts</div>
                     </div>
                 </div>
 
